@@ -1,7 +1,7 @@
 // src/app/api/admin/login/route.js
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { adminAuth } from '@/lib/firebaseAdmin'
+import { adminAuth } from '../../../../lib/firebaseAdmin.js'
 
 const EXPIRES_IN_MS = 1000 * 60 * 60 * 24 * 5 // 5 days
 const COOKIE_NAME = 'admin_session'
