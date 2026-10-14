@@ -17,6 +17,7 @@
     "firebase-admin": "^13.6.0",
     "git-filter-repo": "^0.0.30",
     "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.24.6",
     "next": "16.0.1",
     "react": "19.2.0",
     "react-apexcharts": "^1.8.0",
