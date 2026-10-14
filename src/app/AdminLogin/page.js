@@ -4,8 +4,8 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
 export default function Page() {
-  const router = useRouter()
-
+  
+  const router = useRouter() 
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState(null)
@@ -32,6 +32,7 @@ export default function Page() {
     setFieldErrors(errors)
     return Object.keys(errors).length === 0
   }
+
 
   const handleLogin = async (e) => {
     e.preventDefault()
