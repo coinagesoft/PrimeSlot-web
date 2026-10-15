@@ -1,41 +1,84 @@
-// src/app/api/me/route.js
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
-import { rtdb } from "@/lib/firebaseAdmin";
-
-// ✅ use the same secret as verify-widget-token + profile/upload + approve
-const JWT_SECRET = process.env.JWT_SECRET || "MySuperSecretJWTSecret";
+import db from "@/lib/db";
 
 function addCORS(res) {
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.headers.set(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
+    "Content-Type,Authorization"
   );
   return res;
 }
 
 export async function OPTIONS() {
-  return addCORS(NextResponse.json({}, { status: 204 }));
+  return addCORS(new NextResponse(null, { status: 204 }));
+}
+
+function parseJson(value) {
+  if (value == null) return null;
+  if (typeof value !== "string") return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function buildMember(row) {
+  const record = parseJson(row.record_data);
+
+  return {
+    ...((record && typeof record === "object" && !Array.isArray(record))
+      ? record
+      : {}),
+    firebase_key: row.firebase_key,
+    phone: parseJson(row.phone),
+    businessName: parseJson(row.businessName),
+    city: parseJson(row.city),
+    email: parseJson(row.email),
+    region: parseJson(row.region),
+    fullName: parseJson(row.fullName),
+    createdAt: parseJson(row.createdAt),
+    updatedAt: parseJson(row.updatedAt),
+    chapterName: parseJson(row.chapterName),
+    memberStatus: parseJson(row.memberStatus),
+    trafficLight: parseJson(row.trafficLight),
+    businessCategory: parseJson(row.businessCategory),
+    notes: parseJson(row.notes),
+    userProfile: parseJson(row.userProfile)
+  };
 }
 
 export async function GET(request) {
   try {
-    const auth = request.headers.get("authorization") || "";
-    const cookieHeader = request.headers.get("cookie") || "";
+    const jwtSecret = process.env.JWT_SECRET;
+
+    if (!jwtSecret) {
+      console.error("JWT_SECRET is not configured");
+
+      return addCORS(
+        NextResponse.json(
+          { success: false, message: "Authentication configuration error" },
+          { status: 500 }
+        )
+      );
+    }
+
+    const authorization = request.headers.get("authorization") || "";
+
     let token = null;
 
-    // 1) Bearer header
-    if (auth && auth.startsWith("Bearer ")) {
-      token = auth.split(" ")[1];
+    if (authorization.startsWith("Bearer ")) {
+      token = authorization.slice(7).trim();
     } else {
-      // 2) session cookie fallback (for browser)
-      const m = cookieHeader.match(/(?:^|;\s*)session=([^;]+)/);
-      if (m) token = decodeURIComponent(m[1]);
+      token = request.cookies.get("session")?.value || null;
     }
 
     if (!token) {
@@ -48,9 +91,10 @@ export async function GET(request) {
     }
 
     let decoded;
+
     try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (err) {
+      decoded = jwt.verify(token, jwtSecret);
+    } catch {
       return addCORS(
         NextResponse.json(
           { success: false, message: "Token expired or invalid" },
@@ -60,7 +104,13 @@ export async function GET(request) {
     }
 
     const memberId = decoded.sub;
-    if (!memberId) {
+
+    if (
+      typeof memberId !== "string" ||
+      !memberId.trim() ||
+      decoded.provider !== "check-user" ||
+      decoded.purpose !== "test-preview"
+    ) {
       return addCORS(
         NextResponse.json(
           { success: false, message: "Invalid token payload" },
@@ -69,8 +119,33 @@ export async function GET(request) {
       );
     }
 
-    const snap = await rtdb.ref(`/members/${memberId}`).get();
-    if (!snap.exists()) {
+    const [rows] = await db.execute(
+      `
+        SELECT
+          firebase_key,
+          record_data,
+          phone,
+          businessName,
+          city,
+          email,
+          region,
+          fullName,
+          createdAt,
+          updatedAt,
+          chapterName,
+          memberStatus,
+          trafficLight,
+          businessCategory,
+          notes,
+          userProfile
+        FROM members
+        WHERE firebase_key = ?
+        LIMIT 1
+      `,
+      [memberId]
+    );
+
+    if (!rows.length) {
       return addCORS(
         NextResponse.json(
           { success: false, message: "Member not found" },
@@ -79,25 +154,27 @@ export async function GET(request) {
       );
     }
 
+    const member = buildMember(rows[0]);
+
     return addCORS(
       NextResponse.json(
         {
           success: true,
           memberId,
-          member: snap.val(), // includes userProfile with approved/photoURL/etc.
+          member
         },
         { status: 200 }
       )
     );
-  } catch (err) {
-    console.error("me route error:", err);
+  } catch (error) {
+    console.error("me route MySQL error:", {
+      message: error?.message,
+      code: error?.code
+    });
+
     return addCORS(
       NextResponse.json(
-        {
-          success: false,
-          message: "Server error",
-          error: String(err),
-        },
+        { success: false, message: "Unable to load member profile" },
         { status: 500 }
       )
     );

@@ -7,7 +7,7 @@ const pool = mysql.createPool({
   password: 'myfsu2-pokqef-kunpiF',
   database: 'u856729253_primeslot',
   waitForConnections: true,
-  connectionLimit: 10,
+  connectionLimit: 1000,
   queueLimit: 0, 
 }); 
 

@@ -1,151 +1,315 @@
-// src/app/api/verify-otp/route.js
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
-import { rtdb } from "@/lib/firebaseAdmin";
+import db from "@/lib/db";
 
 function addCORS(res) {
-  res.headers.set('Access-Control-Allow-Origin', '*');
-  res.headers.set('Access-Control-Allow-Methods', 'POST,OPTIONS');
-  res.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.headers.set("Access-Control-Allow-Origin", "*");
+  res.headers.set("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.headers.set(
+    "Access-Control-Allow-Headers",
+    "Content-Type,Authorization"
+  );
   return res;
 }
-export async function OPTIONS() { return addCORS(NextResponse.json({}, { status: 204 })); }
 
-function digitsOnly(s) {
-  if (!s && s !== 0) return '';
-  return String(s).replace(/\D/g, '');
+export async function OPTIONS() {
+  return addCORS(new NextResponse(null, { status: 204 }));
 }
 
-function extractPhoneValue(input) {
-  if (input == null) return null;
-  if (typeof input === 'string' || typeof input === 'number') return String(input);
-  if (typeof input === 'object') {
-    const keys = ['Value','value','phone','Phone','mobile','Mobile','number','phoneRaw'];
-    for (const k of keys) {
-      if (k in input && input[k] != null) return String(input[k]);
-    }
-    const vals = Object.values(input).filter(v => v != null && (typeof v === 'string' || typeof v === 'number'));
-    if (vals.length) return String(vals[0]);
-  }
-  return null;
+function digitsOnly(value) {
+  return String(value ?? "").replace(/\D/g, "");
 }
 
-async function findMemberByPhoneDigits(phoneDigits) {
-  if (!phoneDigits) return null;
-  const snap = await rtdb.ref('/members').get();
-  if (!snap.exists()) return null;
-  const members = snap.val();
-  for (const [id, rec] of Object.entries(members)) {
-    const candidates = [];
-    if (rec?.phone !== undefined) candidates.push(rec.phone);
-    if (rec?.phoneRaw !== undefined) candidates.push(rec.phoneRaw);
-    candidates.push(rec);
+function parseJson(value) {
+  if (value == null) return null;
+  if (typeof value !== "string") return value;
 
-    for (const p of candidates) {
-      let candidate = null;
-      if (p == null) continue;
-      if (typeof p === 'string' || typeof p === 'number') candidate = String(p);
-      else if (typeof p === 'object') {
-        const keys = ['Value','value','phone','Phone','mobile','Mobile','number'];
-        for (const k of keys) {
-          if (k in p && p[k] != null) { candidate = String(p[k]); break; }
-        }
-        if (!candidate) {
-          const vals = Object.values(p).filter(v => v != null && (typeof v === 'string' || typeof v === 'number'));
-          if (vals.length) candidate = String(vals[0]);
-        }
-      }
-      if (!candidate) continue;
-      const storedDigits = digitsOnly(candidate);
-      if (!storedDigits) continue;
-      if (storedDigits === phoneDigits || storedDigits.endsWith(phoneDigits) || phoneDigits.endsWith(storedDigits)) {
-        return { id, member: rec, storedDigits };
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function extractPhoneValue(value) {
+  value = parseJson(value);
+
+  if (value == null) return "";
+
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+
+  if (typeof value === "object") {
+    const keys = [
+      "Value", "value", "phone", "Phone",
+      "mobile", "Mobile", "number", "phoneRaw", "contact"
+    ];
+
+    for (const key of keys) {
+      if (value[key] != null) {
+        const result = extractPhoneValue(value[key]);
+        if (result) return result;
       }
     }
+
+    for (const item of Object.values(value)) {
+      const result = extractPhoneValue(item);
+      if (result) return result;
+    }
   }
+
+  return "";
+}
+
+function phoneMatches(storedValue, inputDigits) {
+  const storedDigits = digitsOnly(extractPhoneValue(storedValue));
+
+  if (storedDigits.length < 10 || inputDigits.length < 10) {
+    return false;
+  }
+
+  return (
+    storedDigits === inputDigits ||
+    storedDigits.slice(-10) === inputDigits.slice(-10)
+  );
+}
+
+async function findMemberByPhoneDigits(inputDigits) {
+  const [rows] = await db.execute(`
+    SELECT
+      firebase_key,
+      record_data,
+      phone,
+      businessName,
+      city,
+      email,
+      region,
+      fullName,
+      createdAt,
+      updatedAt,
+      chapterName,
+      memberStatus,
+      trafficLight,
+      businessCategory,
+      notes,
+      userProfile
+    FROM members
+  `);
+
+  for (const row of rows) {
+    const record = parseJson(row.record_data);
+
+    const candidates = [
+      row.phone,
+      record?.phone,
+      record?.mobile,
+      record?.phoneRaw
+    ];
+
+    if (!candidates.some(value => phoneMatches(value, inputDigits))) {
+      continue;
+    }
+
+    const member = {
+      ...((record && typeof record === "object" && !Array.isArray(record))
+        ? record
+        : {}),
+      firebase_key: row.firebase_key,
+      phone: parseJson(row.phone),
+      businessName: parseJson(row.businessName),
+      city: parseJson(row.city),
+      email: parseJson(row.email),
+      region: parseJson(row.region),
+      fullName: parseJson(row.fullName) ?? record?.fullName ?? null,
+      createdAt: parseJson(row.createdAt),
+      updatedAt: parseJson(row.updatedAt),
+      chapterName: parseJson(row.chapterName),
+      memberStatus: parseJson(row.memberStatus),
+      trafficLight: parseJson(row.trafficLight),
+      businessCategory: parseJson(row.businessCategory),
+      notes: parseJson(row.notes),
+      userProfile: parseJson(row.userProfile)
+    };
+
+    return { id: row.firebase_key, member };
+  }
+
   return null;
 }
 
 export async function POST(request) {
+  const requestId = crypto.randomUUID();
+
   try {
     const body = await request.json().catch(() => ({}));
-    const phoneRaw = (body?.phone || body?.mobile || body?.identifier || "").toString().trim();
-    const otp = (body?.otp || body?.code || "").toString().trim();
-    if (!phoneRaw || !otp) return addCORS(NextResponse.json({ ok: false, message: "Phone and otp required" }, { status: 400 }));
+
+    const phoneRaw = String(
+      body?.phone || body?.mobile || body?.identifier || ""
+    ).trim();
+
+    const otp = String(body?.otp || body?.code || "").trim();
+
+    if (!phoneRaw || !otp) {
+      return addCORS(
+        NextResponse.json(
+          { ok: false, message: "Phone and OTP required" },
+          { status: 400 }
+        )
+      );
+    }
 
     const phoneDigits = digitsOnly(phoneRaw);
-    if (!phoneDigits) return addCORS(NextResponse.json({ ok: false, message: "Invalid phone" }, { status: 400 }));
 
-    // Verify member exists in DB
+    if (phoneDigits.length < 10) {
+      return addCORS(
+        NextResponse.json(
+          { ok: false, message: "Invalid phone number" },
+          { status: 400 }
+        )
+      );
+    }
+
     const matched = await findMemberByPhoneDigits(phoneDigits);
-    if (!matched) return addCORS(NextResponse.json({ ok: false, message: "Member not found" }, { status: 404 }));
 
-    // Call MSG91 verify endpoint
-    const MSG91_AUTHKEY = "417046AkzbTCai3m68c9391bP1";
-    if (!MSG91_AUTHKEY) return addCORS(NextResponse.json({ ok: false, message: "Server misconfigured: MSG91_AUTHKEY missing" }, { status: 500 }));
+    if (!matched) {
+      return addCORS(
+        NextResponse.json(
+          { ok: false, message: "Member not found" },
+          { status: 404 }
+        )
+      );
+    }
 
-    const verifyUrl = "https://api.msg91.com/api/v5/otp/verify";
-    const payload = { mobile: phoneDigits, otp, authkey: MSG91_AUTHKEY };
+    const authKey = process.env.MSG91_AUTHKEY;
+    const jwtSecret = process.env.JWT_SECRET;
 
-    const resp = await fetch(verifyUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+    if (!authKey || !jwtSecret) {
+      console.error(`[verify-otp:${requestId}] Missing server configuration`, {
+        msg91Configured: Boolean(authKey),
+        jwtConfigured: Boolean(jwtSecret)
+      });
+
+      return addCORS(
+        NextResponse.json(
+          { ok: false, message: "Login service configuration error" },
+          { status: 500 }
+        )
+      );
+    }
+
+    const verifyUrl = new URL(
+      "https://control.msg91.com/api/v5/otp/verify"
+    );
+
+    verifyUrl.searchParams.set("mobile", phoneDigits);
+    verifyUrl.searchParams.set("otp", otp);
+
+    const resp = await fetch(verifyUrl.toString(), {
+      method: "GET",
+      headers: {
+        authkey: authKey,
+        accept: "application/json"
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(10000)
     });
 
-    const text = await resp.text();
-    const contentType = resp.headers.get('content-type') || '';
-    let data = null;
-    if (contentType.includes('application/json')) data = JSON.parse(text);
+    const responseText = await resp.text();
+
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      data = null;
+    }
+
+    // Log status and message only; do not log OTPs or credentials.
+    console.info(`[verify-otp:${requestId}] MSG91 result`, {
+      status: resp.status,
+      message: data?.message ?? data?.errors ?? "No message"
+    });
 
     if (!resp.ok) {
-      return addCORS(NextResponse.json({ ok: false, message: "MSG91 verify failed", status: resp.status, raw: data || text }, { status: 502 }));
+      return addCORS(
+        NextResponse.json(
+          { ok: false, message: "OTP provider request failed" },
+          { status: 502 }
+        )
+      );
     }
 
-    // MSG91 success detection - adapt depending on your MSG91 account responses
-    const success = data?.type === "success" || data?.status === "success" || data?.message?.toLowerCase()?.includes("verified") || data?.success === true;
+    const providerMessage = String(data?.message ?? "").toLowerCase();
+
+    const success =
+      providerMessage === "otp verified success" ||
+      providerMessage === "number_verified_successfully";
+
     if (!success) {
-      return addCORS(NextResponse.json({ ok: false, message: data?.message || "OTP verify failed", raw: data }, { status: 400 }));
+      return addCORS(
+        NextResponse.json(
+          { ok: false, message: "OTP verification failed" },
+          { status: 400 }
+        )
+      );
     }
 
-    // optionally sign JWT
-    const JWT_SECRET = process.env.JWT_SECRET || null;
-    const maxAge = Number(process.env.JWT_MAX_AGE || 60 * 60 * 24 * 7);
+    const configuredMaxAge = Number(process.env.JWT_MAX_AGE || 604800);
+    const maxAge =
+      Number.isSafeInteger(configuredMaxAge) && configuredMaxAge > 0
+        ? configuredMaxAge
+        : 604800;
 
-    const responseBody = {
+    const token = jwt.sign(
+      {
+        sub: matched.id,
+        provider: "msg91"
+      },
+      jwtSecret,
+      { expiresIn: maxAge }
+    );
+
+    const response = NextResponse.json({
       ok: true,
-      message: "OTP verified and member found",
+      message: "OTP verified successfully",
       memberId: matched.id,
-      member: matched.member,
-      raw: data
-    };
+      member: matched.member
+    });
 
-    if (!JWT_SECRET) {
-      return addCORS(NextResponse.json(responseBody, { status: 200 }));
-    }
-
-    const payloadJwt = {
-      sub: matched.id,
-      provider: "msg91",
-      member: { id: matched.id, fullName: matched.member?.fullName || null }
-    };
-
-    const token = jwt.sign(payloadJwt, JWT_SECRET, { expiresIn: maxAge });
-    const res = NextResponse.json({ ...responseBody, token }, { status: 200 });
-    res.cookies.set("session", token, {
+    response.cookies.set("session", token, {
       httpOnly: true,
       path: "/",
       maxAge,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite: "lax"
     });
 
-    return addCORS(res);
-  } catch (err) {
-    console.error("verify-otp error:", err);
-    return addCORS(NextResponse.json({ ok: false, message: "Server error", error: String(err) }, { status: 500 }));
+    return addCORS(response);
+  } catch (error) {
+    const timedOut =
+      error?.name === "TimeoutError" ||
+      error?.name === "AbortError";
+
+    console.error(`[verify-otp:${requestId}] Error`, {
+      name: error?.name,
+      code: error?.code,
+      message: error?.message
+    });
+
+    return addCORS(
+      NextResponse.json(
+        {
+          ok: false,
+          message: timedOut
+            ? "OTP provider timed out. Please try again."
+            : "Unable to verify OTP"
+        },
+        { status: timedOut ? 504 : 500 }
+      )
+    );
   }
 }
