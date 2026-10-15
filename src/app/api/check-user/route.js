@@ -9,7 +9,10 @@ import db from "@/lib/db";
 function addCORS(res) {
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.headers.set("Access-Control-Allow-Headers", "Content-Type,Authorization");
+  res.headers.set(
+    "Access-Control-Allow-Headers",
+    "Content-Type,Authorization"
+  );
   return res;
 }
 
@@ -43,8 +46,15 @@ function extractPhoneValue(value) {
 
   if (typeof value === "object") {
     const keys = [
-      "Value", "value", "phone", "Phone",
-      "mobile", "Mobile", "number", "phoneRaw", "contact"
+      "Value",
+      "value",
+      "phone",
+      "Phone",
+      "mobile",
+      "Mobile",
+      "number",
+      "phoneRaw",
+      "contact"
     ];
 
     for (const key of keys) {
@@ -81,7 +91,9 @@ function buildMember(row) {
 
   return {
     ...(
-      record && typeof record === "object" && !Array.isArray(record)
+      record &&
+      typeof record === "object" &&
+      !Array.isArray(record)
         ? record
         : {}
     ),
@@ -104,37 +116,71 @@ function buildMember(row) {
 }
 
 export async function POST(request) {
+  let stage = "initialization";
+
   try {
-    // Explicitly enable only for your dummy-data preview deployment.
+    // Preview-only login. Keep disabled in production.
+    stage = "preview-login-check";
+
     if (process.env.PREVIEW_PHONE_LOGIN_ENABLED !== "true") {
       return addCORS(
         NextResponse.json(
-          { ok: false, message: "Preview login is disabled" },
+          {
+            ok: false,
+            message: "Preview login is disabled"
+          },
           { status: 404 }
         )
       );
     }
 
+    stage = "jwt-configuration";
+
     const jwtSecret = process.env.JWT_SECRET;
 
-    if (!jwtSecret) {
+    if (!jwtSecret || jwtSecret.length < 32) {
+      console.error("JWT_SECRET is missing or too short");
+
       return addCORS(
         NextResponse.json(
-          { ok: false, message: "Authentication configuration error" },
+          {
+            ok: false,
+            message: "Authentication configuration error"
+          },
           { status: 500 }
         )
       );
     }
 
-    const body = await request.json().catch(() => ({}));
+    stage = "request-body";
+
+    const body = await request.json().catch(() => null);
+
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return addCORS(
+        NextResponse.json(
+          {
+            ok: false,
+            exists: false,
+            message: "Request body must be valid JSON"
+          },
+          { status: 400 }
+        )
+      );
+    }
+
     const phoneRaw = String(
-      body?.phone || body?.mobile || body?.identifier || ""
+      body.phone || body.mobile || body.identifier || ""
     ).trim();
 
     if (!phoneRaw) {
       return addCORS(
         NextResponse.json(
-          { ok: false, exists: false, message: "Phone required" },
+          {
+            ok: false,
+            exists: false,
+            message: "Phone required"
+          },
           { status: 400 }
         )
       );
@@ -145,19 +191,40 @@ export async function POST(request) {
     if (inputDigits.length < 10) {
       return addCORS(
         NextResponse.json(
-          { ok: false, exists: false, message: "Invalid phone" },
+          {
+            ok: false,
+            exists: false,
+            message: "Invalid phone"
+          },
           { status: 400 }
         )
       );
     }
 
+    stage = "mysql-member-query";
+
     const [rows] = await db.execute(`
       SELECT
-        firebase_key, record_data, phone, businessName, city, email,
-        region, fullName, createdAt, updatedAt, chapterName,
-        memberStatus, trafficLight, businessCategory, notes, userProfile
+        firebase_key,
+        record_data,
+        phone,
+        businessName,
+        city,
+        email,
+        region,
+        fullName,
+        createdAt,
+        updatedAt,
+        chapterName,
+        memberStatus,
+        trafficLight,
+        businessCategory,
+        notes,
+        userProfile
       FROM members
     `);
+
+    stage = "phone-matching";
 
     let foundRow = null;
 
@@ -188,10 +255,18 @@ export async function POST(request) {
       );
     }
 
+    stage = "build-member";
+
     const member = buildMember(foundRow);
     const memberId = String(foundRow.firebase_key);
 
-    const maxAge = 60 * 60;
+    if (!memberId || memberId === "undefined" || memberId === "null") {
+      throw new Error("Matched member has no firebase_key");
+    }
+
+    stage = "generate-jwt";
+
+    const expiresIn = 60 * 60;
 
     const token = jwt.sign(
       {
@@ -200,35 +275,55 @@ export async function POST(request) {
         purpose: "test-preview"
       },
       jwtSecret,
-      { expiresIn: maxAge }
+      {
+        expiresIn,
+        issuer: "prime-slot",
+        audience: "prime-slot-client",
+        algorithm: "HS256"
+      }
     );
 
-    const response = NextResponse.json({
-      ok: true,
-      exists: true,
-      message: "Preview login successful",
-      memberId,
-      member
-    });
+    stage = "send-response";
 
-    response.cookies.set("session", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge
-    });
-
-    return addCORS(response);
+    // Return the JWT directly. Do not create a session cookie.
+    return addCORS(
+      NextResponse.json({
+        ok: true,
+        exists: true,
+        message: "Preview token generated",
+        token,
+        tokenType: "Bearer",
+        expiresIn,
+        memberId,
+        member
+      })
+    );
   } catch (error) {
-    console.error("check-user MySQL error:", {
+    console.error("check-user failed:", {
+      stage,
       message: error?.message,
-      code: error?.code
+      code: error?.code,
+      sqlMessage: error?.sqlMessage
     });
+
+    const isProduction = process.env.NODE_ENV === "production";
 
     return addCORS(
       NextResponse.json(
-        { ok: false, exists: false, message: "Unable to check member" },
+        {
+          ok: false,
+          exists: false,
+          message: "Unable to check member",
+          stage,
+          ...(
+            !isProduction
+              ? {
+                  error: error?.message || "Unknown error",
+                  code: error?.code || null
+                }
+              : {}
+          )
+        },
         { status: 500 }
       )
     );

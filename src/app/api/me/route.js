@@ -35,16 +35,20 @@ function buildMember(row) {
   const record = parseJson(row.record_data);
 
   return {
-    ...((record && typeof record === "object" && !Array.isArray(record))
-      ? record
-      : {}),
+    ...(
+      record &&
+      typeof record === "object" &&
+      !Array.isArray(record)
+        ? record
+        : {}
+    ),
     firebase_key: row.firebase_key,
     phone: parseJson(row.phone),
     businessName: parseJson(row.businessName),
     city: parseJson(row.city),
     email: parseJson(row.email),
     region: parseJson(row.region),
-    fullName: parseJson(row.fullName),
+    fullName: parseJson(row.fullName) ?? record?.fullName ?? null,
     createdAt: parseJson(row.createdAt),
     updatedAt: parseJson(row.updatedAt),
     chapterName: parseJson(row.chapterName),
@@ -60,31 +64,32 @@ export async function GET(request) {
   try {
     const jwtSecret = process.env.JWT_SECRET;
 
-    if (!jwtSecret) {
-      console.error("JWT_SECRET is not configured");
+    if (!jwtSecret || jwtSecret.length < 32) {
+      console.error("JWT_SECRET is missing or too short");
 
       return addCORS(
         NextResponse.json(
-          { success: false, message: "Authentication configuration error" },
+          {
+            success: false,
+            message: "Authentication configuration error"
+          },
           { status: 500 }
         )
       );
     }
 
+    // Bearer token is required. Cookies are not accepted.
     const authorization = request.headers.get("authorization") || "";
-
-    let token = null;
-
-    if (authorization.startsWith("Bearer ")) {
-      token = authorization.slice(7).trim();
-    } else {
-      token = request.cookies.get("session")?.value || null;
-    }
+    const match = authorization.match(/^Bearer\s+(\S+)$/i);
+    const token = match?.[1];
 
     if (!token) {
       return addCORS(
         NextResponse.json(
-          { success: false, message: "Missing token" },
+          {
+            success: false,
+            message: "Bearer token required"
+          },
           { status: 401 }
         )
       );
@@ -93,31 +98,44 @@ export async function GET(request) {
     let decoded;
 
     try {
-      decoded = jwt.verify(token, jwtSecret);
+      decoded = jwt.verify(token, jwtSecret, {
+        issuer: "prime-slot",
+        audience: "prime-slot-client",
+        algorithms: ["HS256"]
+      });
     } catch {
       return addCORS(
         NextResponse.json(
-          { success: false, message: "Token expired or invalid" },
+          {
+            success: false,
+            message: "Token expired or invalid"
+          },
+          { status: 401 }
+        )
+      );
+    }
+
+    // Accept only tokens issued by the preview phone-login endpoint.
+    if (
+      !decoded ||
+      typeof decoded === "string" ||
+      typeof decoded.sub !== "string" ||
+      !decoded.sub.trim() ||
+      decoded.provider !== "check-user" ||
+      decoded.purpose !== "test-preview"
+    ) {
+      return addCORS(
+        NextResponse.json(
+          {
+            success: false,
+            message: "Invalid token payload"
+          },
           { status: 401 }
         )
       );
     }
 
     const memberId = decoded.sub;
-
-    if (
-      typeof memberId !== "string" ||
-      !memberId.trim() ||
-      decoded.provider !== "check-user" ||
-      decoded.purpose !== "test-preview"
-    ) {
-      return addCORS(
-        NextResponse.json(
-          { success: false, message: "Invalid token payload" },
-          { status: 401 }
-        )
-      );
-    }
 
     const [rows] = await db.execute(
       `
@@ -148,7 +166,10 @@ export async function GET(request) {
     if (!rows.length) {
       return addCORS(
         NextResponse.json(
-          { success: false, message: "Member not found" },
+          {
+            success: false,
+            message: "Member not found"
+          },
           { status: 404 }
         )
       );
@@ -167,14 +188,17 @@ export async function GET(request) {
       )
     );
   } catch (error) {
-    console.error("me route MySQL error:", {
+    console.error("Profile route MySQL error:", {
       message: error?.message,
       code: error?.code
     });
 
     return addCORS(
       NextResponse.json(
-        { success: false, message: "Unable to load member profile" },
+        {
+          success: false,
+          message: "Unable to load member profile"
+        },
         { status: 500 }
       )
     );
