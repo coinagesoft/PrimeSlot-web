@@ -14,12 +14,14 @@ async function requireSession() {
   if (!session) throw Object.assign(new Error('Unauthorized'), { status: 401 });
   return adminAuth.verifySessionCookie(session, true);
 }
+
 function addCORS(res) {
   res.headers.set('Access-Control-Allow-Origin', '*');
   res.headers.set('Access-Control-Allow-Methods', 'GET,PATCH,DELETE,OPTIONS');
   res.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   return res;
 }
+
 export async function OPTIONS() { return addCORS(NextResponse.json({}, { status: 204 })); }
 
 const PatchSchema = z.object({

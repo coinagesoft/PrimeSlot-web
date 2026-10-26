@@ -13,6 +13,7 @@ export default function Page() {
   const [showPassword, setShowPassword] = useState(false)
   const [fieldErrors, setFieldErrors] = useState({})
 
+  
   const validateForm = () => {
     const errors = {}
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
