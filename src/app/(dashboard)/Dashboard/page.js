@@ -1,31 +1,12 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 
 const Chart = dynamic(() => import("react-apexcharts"), { ssr: false });
 
-const DEMO_EVENTS = [
-  { id: "e1", title: "PrimeSlot Business Connect", location: "Pune, Maharashtra", date: "2026-10-25", attendees: 84 },
-  { id: "e2", title: "Founders Networking Meetup", location: "Mumbai, Maharashtra", date: "2026-10-29", attendees: 56 },
-  { id: "e3", title: "Industry Leaders Roundtable", location: "Bengaluru, Karnataka", date: "2026-11-04", attendees: 42 },
-  { id: "e4", title: "Monthly Member Mixer", location: "Pune, Maharashtra", date: "2026-11-12", attendees: 67 },
-];
 
-const DEMO_MEMBERS = [
-  { id: "m1", fullName: "Aarav Mehta", role: "Business Consultant", company: "Mehta Advisory", memberStatus: "Active", initials: "AM", color: "primary" },
-  { id: "m2", fullName: "Priya Shah", role: "Founder", company: "Shah Ventures", memberStatus: "Active", initials: "PS", color: "success" },
-  { id: "m3", fullName: "Rohan Kulkarni", role: "Technology Partner", company: "RK Digital", memberStatus: "Pending", initials: "RK", color: "warning" },
-  { id: "m4", fullName: "Neha Desai", role: "Financial Advisor", company: "Desai Finance", memberStatus: "Active", initials: "ND", color: "info" },
-];
-
-const DEMO_MEETINGS = [
-  { id: "mt1", aId: "m1", bId: "m2", topic: "Partnership discussion", scheduledAt: "2026-10-21T11:30:00", status: "Confirmed" },
-  { id: "mt2", aId: "m3", bId: "m4", topic: "New project introduction", scheduledAt: "2026-10-21T14:00:00", status: "Pending" },
-  { id: "mt3", aId: "m2", bId: "m4", topic: "Business growth", scheduledAt: "2026-10-22T10:00:00", status: "Confirmed" },
-  { id: "mt4", aId: "m1", bId: "m3", topic: "Technology collaboration", scheduledAt: "2026-10-23T16:00:00", status: "Pending" },
-];
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -119,29 +100,95 @@ function StatCard({ title, value, detail, icon, tone, trend }) {
 }
 
 export default function DashboardPage() {
-  // Dummy data only. API integration will be added later.
-  const [events] = useState(DEMO_EVENTS);
-  const [members] = useState(DEMO_MEMBERS);
-  const [meetings] = useState(DEMO_MEETINGS);
+  const [events, setEvents] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [meetings, setMeetings] = useState([]);
+  const [monthlyMeetings, setMonthlyMeetings] = useState([]);
+
+  const [stats, setStats] = useState({
+    totalAppointments: 0,
+    activeMembers: 0,
+    upcomingEvents: 0,
+    pendingRequests: 0,
+  });
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   const [period, setPeriod] = useState("This year");
   const [eventSearch, setEventSearch] = useState("");
 
-  const stats = useMemo(
-    () => ({
-      totalAppointments: meetings.length,
-      activeMembers: members.filter(
-        (member) => member.memberStatus === "Active"
-      ).length,
-      upcomingEvents: events.filter(
-        (event) => new Date(event.date) >= new Date("2026-10-21")
-      ).length,
-      pendingRequests: meetings.filter(
-        (meeting) => meeting.status === "Pending"
-      ).length,
-    }),
-    [events, members, meetings]
-  );
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchDashboard() {
+      try {
+        setLoading(true);
+        setError("");
+
+        const response = await fetch("/api/dashboard", {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+          throw new Error(
+            result.message || "Failed to load dashboard data."
+          );
+        }
+
+        if (cancelled) return;
+
+        const data = result.data;
+
+        setStats({
+          totalAppointments: data.totalMeetings ?? 0,
+          activeMembers: data.activeMembers ?? 0,
+          upcomingEvents: data.upcomingEvents ?? 0,
+          pendingRequests: data.pendingRequests ?? 0,
+        });
+
+        setEvents(data.upcomingEventsList ?? []);
+        setMembers(data.members ?? []);
+        setMeetings(data.recentMeetings ?? []);
+        setMonthlyMeetings(data.monthlyMeetings ?? []);
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Dashboard fetch error:", err);
+          setError(err.message || "Unable to load dashboard.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    fetchDashboard();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+
+  const chartMonths =
+    period === "This year"
+      ? monthlyMeetings.filter(
+        (item) => Number(item.year) === new Date().getFullYear()
+      )
+      : monthlyMeetings;
+
+  const chartCategories = chartMonths.map((item) => item.month);
+
+  const chartSeries = [
+    {
+      name: "Meetings",
+      data: chartMonths.map((item) => Number(item.total) || 0),
+    },
+  ];
 
   const chartOptions = {
     chart: {
@@ -172,9 +219,10 @@ export default function DashboardPage() {
       padding: { left: 8, right: 8 },
     },
     xaxis: {
-      categories: MONTHS,
+      categories: chartCategories,
       axisBorder: { show: false },
       axisTicks: { show: false },
+
     },
     yaxis: {
       min: 0,
@@ -195,12 +243,7 @@ export default function DashboardPage() {
     },
   };
 
-  const chartSeries = [
-    {
-      name: "Meetings",
-      data: [18, 24, 22, 31, 28, 40, 36, 48, 43, 55, 62, 70],
-    },
-  ];
+
 
   const filteredEvents = events.filter((event) =>
     `${event.title} ${event.location}`
@@ -208,7 +251,7 @@ export default function DashboardPage() {
       .includes(eventSearch.toLowerCase())
   );
 
-  const getMember = (id) => members.find((member) => member.id === id);
+  const getMember = (id) => members.find((member) => String(member.id) === String(id));
 
   const today = new Date().toLocaleDateString("en-IN", {
     weekday: "long",
@@ -318,10 +361,34 @@ export default function DashboardPage() {
         </div>
 
         <div className="d-flex align-items-center gap-2">
-         
+
           <span className="text-muted small d-none d-md-inline">{today}</span>
         </div>
       </div>
+
+      {loading && (
+        <div className="alert alert-info d-flex align-items-center gap-2">
+          <span
+            className="spinner-border spinner-border-sm"
+            role="status"
+            aria-hidden="true"
+          />
+          Loading dashboard data...
+        </div>
+      )}
+
+      {error && (
+        <div className="alert alert-danger" role="alert">
+          <strong>Unable to load dashboard:</strong> {error}
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-danger ms-3"
+            onClick={() => window.location.reload()}
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Welcome section */}
       <div className="card dashboard-welcome mb-4">
@@ -351,8 +418,8 @@ export default function DashboardPage() {
         <StatCard
           title="Total Meetings"
           value={stats.totalAppointments}
-          detail="demo meetings"
-          trend="+12.8%"
+          detail="Meetings in the database"
+          trend=""
           icon="ri-calendar-check-line"
           tone="primary"
         />
@@ -360,8 +427,8 @@ export default function DashboardPage() {
         <StatCard
           title="Active Members"
           value={stats.activeMembers}
-          detail={`of ${members.length} demo members`}
-          trend="Active"
+          detail={`of ${members.length} members`}
+          trend=""
           icon="ri-user-follow-line"
           tone="success"
         />
@@ -369,8 +436,8 @@ export default function DashboardPage() {
         <StatCard
           title="Upcoming Events"
           value={stats.upcomingEvents}
-          detail="scheduled events"
-          trend="Upcoming"
+          detail="Scheduled events"
+          trend=""
           icon="ri-calendar-event-line"
           tone="warning"
         />
@@ -378,8 +445,8 @@ export default function DashboardPage() {
         <StatCard
           title="Pending Requests"
           value={stats.pendingRequests}
-          detail="need attention"
-          trend="Review"
+          detail="Awaiting action"
+          trend=""
           icon="ri-time-line"
           tone="info"
         />
@@ -421,7 +488,7 @@ export default function DashboardPage() {
                 />
                 <span className="small text-muted">Meetings</span>
                 <span className="small fw-semibold ms-auto">
-                  Sample trend
+                  Live trend
                 </span>
               </div>
 
@@ -441,7 +508,7 @@ export default function DashboardPage() {
               <div>
                 <h5 className="card-title mb-1">Member activity</h5>
                 <small className="text-muted">
-                  Sample member status
+                  Member status overview
                 </small>
               </div>
 
@@ -461,7 +528,7 @@ export default function DashboardPage() {
                       {" "}/ {members.length}
                     </span>
                   </h2>
-                  <small className="text-muted">Active demo members</small>
+                  <small className="text-muted">Active members</small>
                 </div>
 
                 <span className="badge bg-label-success">Active</span>
@@ -472,11 +539,10 @@ export default function DashboardPage() {
                   className="progress-bar bg-success"
                   role="progressbar"
                   style={{
-                    width: `${
-                      members.length
-                        ? (stats.activeMembers / members.length) * 100
-                        : 0
-                    }%`,
+                    width: `${members.length
+                      ? (stats.activeMembers / members.length) * 100
+                      : 0
+                      }%`,
                   }}
                   aria-valuenow={
                     members.length
@@ -500,16 +566,15 @@ export default function DashboardPage() {
                       {member.fullName}
                     </div>
                     <small className="text-muted text-truncate d-block">
-                      {member.role}
+                      {member.businessCategory || member.businessName || "Member"}
                     </small>
                   </div>
 
                   <span
-                    className={`badge ${
-                      member.memberStatus === "Active"
-                        ? "bg-label-success"
-                        : "bg-label-warning"
-                    }`}
+                    className={`badge ${member.memberStatus === "Active"
+                      ? "bg-label-success"
+                      : "bg-label-warning"
+                      }`}
                   >
                     {member.memberStatus}
                   </span>
@@ -683,13 +748,14 @@ export default function DashboardPage() {
                     </div>
 
                     <span
-                      className={`badge ${
-                        meeting.status === "Confirmed"
-                          ? "bg-label-success"
-                          : "bg-label-warning"
-                      }`}
+                      className={`badge ${["approved", "confirmed", "scheduled"].includes(
+                        String(meeting.status || "").toLowerCase()
+                      )
+                        ? "bg-label-success"
+                        : "bg-label-warning"
+                        }`}
                     >
-                      {meeting.status}
+                      {meeting.status || "Unknown"}
                     </span>
                   </div>
                 );
@@ -700,7 +766,7 @@ export default function DashboardPage() {
       </div>
 
       <p className="text-muted small text-center mt-4 mb-0">
-        PrimeSlot Admin · Dashboard preview uses dummy data until API integration.
+        PrimeSlot Admin · Dashboard data from MySQL
       </p>
     </div>
   );

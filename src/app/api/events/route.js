@@ -1,155 +1,329 @@
 // src/app/api/events/route.js
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { adminAuth, rtdb } from '@/lib/firebaseAdmin';
-import { z } from 'zod';
 
-/* ---------- Inline schema ---------- */
+import { NextResponse } from 'next/server';
+import { randomUUID } from 'crypto';
+import { z } from 'zod';
+import pool from '../../../lib/db';
+
+export const dynamic = 'force-dynamic';
+
+// Validate event data
 const createEventSchema = z.object({
-  title: z.string().min(1, 'title required'),
-  // accept ms timestamp or ISO string; convert later
-  date: z.union([z.number().int().positive(), z.string().min(1)]),
-  location: z.string().min(1, 'location required'),
+  title: z.string().trim().min(1, 'Title is required'),
+
+  date: z.string().min(1, 'Date is required'),
+
+  location: z.string().trim().min(1, 'Location is required'),
+
   description: z.string().optional().default(''),
-  status: z.enum(['draft','published','archived']).default('draft'),
+
+  status: z.enum(['draft', 'published', 'archived']).default('draft'),
 });
 
-/* ---------- Helpers ---------- */
-const COOKIE = 'admin_session';
-
-async function requireUid() {
-  const jar = await cookies();
-  const session = jar.get(COOKIE)?.value;
-  if (!session) throw Object.assign(new Error('Unauthorized'), { status: 401 });
-  try {
-    const decoded = await adminAuth.verifySessionCookie(session, true);
-    return decoded.uid;
-  } catch {
-    throw Object.assign(new Error('Unauthorized'), { status: 401 });
+// Validate YYYY-MM-DD dates
+function isValidDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
   }
-}
-function yyyymmdd(ms) {
-  const d = new Date(ms);
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  return `${y}${m}${day}`;
-}
-function toMs(v) {
-  if (typeof v === 'number') return v;
-  const t = Date.parse(v);
-  if (Number.isNaN(t)) throw Object.assign(new Error('Invalid date'), { status: 400 });
-  return t;
-}
-function addCORS(res) {
-  res.headers.set('Access-Control-Allow-Origin', '*');
-  res.headers.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  return res;
+
+  const date = new Date(`${value}T00:00:00.000Z`);
+
+  return (
+    !Number.isNaN(date.getTime()) &&
+    date.toISOString().slice(0, 10) === value
+  );
 }
 
-/* ---------- OPTIONS ---------- */
-export async function OPTIONS() {
-  return addCORS(NextResponse.json({}, { status: 204 }));
+// Normalize MySQL records for the frontend
+function normalizeEvent(row) {
+  let recordData = {};
+
+  if (row.record_data) {
+    try {
+      recordData =
+        typeof row.record_data === 'string'
+          ? JSON.parse(row.record_data)
+          : row.record_data;
+    } catch {
+      recordData = {};
+    }
+  }
+
+  return {
+    ...recordData,
+    id: row.firebase_key,
+    title: row.title ?? recordData.title ?? '',
+    description: row.description ?? recordData.description ?? '',
+    date: row.date
+      ? String(row.date).slice(0, 10)
+      : recordData.date ?? '',
+    location: row.location ?? recordData.location ?? '',
+    status: String(
+      row.status ?? recordData.status ?? 'draft'
+    ).toLowerCase(),
+    createdAt: row.createdAt ?? recordData.createdAt ?? null,
+    updatedAt: row.updatedAt ?? recordData.updatedAt ?? null,
+  };
 }
 
-/* ---------- GET /api/events ----------
-   Query:
-     page, pageSize
-     day=YYYYMMDD (optional) OR from, to (ms or ISO)
-     q=keyword (title/location)
-     status=draft|published|archived
---------------------------------------*/
+/* =========================================
+   GET /api/events
+
+   Query parameters:
+   page, pageSize, day, from, to, q, status
+========================================= */
+
 export async function GET(req) {
   try {
-    await requireUid();
-
     const url = new URL(req.url);
-    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
-    const pageSize = Math.max(1, Math.min(50, parseInt(url.searchParams.get('pageSize') || '12', 10)));
+
+    const pageValue = Number.parseInt(
+      url.searchParams.get('page') || '1',
+      10
+    );
+
+    const pageSizeValue = Number.parseInt(
+      url.searchParams.get('pageSize') || '12',
+      10
+    );
+
+    const page = Number.isFinite(pageValue)
+      ? Math.max(1, pageValue)
+      : 1;
+
+    const pageSize = Number.isFinite(pageSizeValue)
+      ? Math.min(50, Math.max(1, pageSizeValue))
+      : 12;
+
+    const offset = (page - 1) * pageSize;
+
     const day = url.searchParams.get('day');
-    const status = url.searchParams.get('status') || null;
-    const q = (url.searchParams.get('q') || '').toLowerCase().trim();
+    const from = url.searchParams.get('from');
+    const to = url.searchParams.get('to');
 
-    const fromRaw = url.searchParams.get('from');
-    const toRaw = url.searchParams.get('to');
-    const from = fromRaw ? toMs(fromRaw) : null;
-    const to = toRaw ? toMs(toRaw) : null;
+    const status = (
+      url.searchParams.get('status') || ''
+    ).trim().toLowerCase();
 
-    let ids = [];
-    if (day) {
-      const snap = await rtdb.ref(`/eventsByDate/${day}`).get();
-      ids = snap.exists() ? Object.keys(snap.val()) : [];
-    } else {
-      // small/medium data: fetch all ids; for very large sets, add server cursors/indexes
-      const snap = await rtdb.ref('/events').get();
-      ids = snap.exists() ? Object.keys(snap.val()) : [];
+    const q = (
+      url.searchParams.get('q') || ''
+    ).trim();
+
+    const conditions = [];
+    const params = [];
+
+    // Filter by status
+    if (status && status !== 'all') {
+      if (!['draft', 'published', 'archived'].includes(status)) {
+        return NextResponse.json(
+          { error: 'Invalid event status' },
+          { status: 400 }
+        );
+      }
+
+      conditions.push('LOWER(status) = ?');
+      params.push(status);
     }
 
-    // Load & filter in memory (fine for admin-scale datasets)
-    const snaps = await Promise.all(ids.map(id => rtdb.ref(`/events/${id}`).get()));
-    let records = snaps.filter(s => s.exists()).map(s => ({ id: s.key, ...s.val() }));
+    // Filter by exact day: YYYYMMDD
+    if (day) {
+      if (!/^\d{8}$/.test(day)) {
+        return NextResponse.json(
+          { error: 'Invalid day format. Use YYYYMMDD.' },
+          { status: 400 }
+        );
+      }
 
-    if (status) records = records.filter(r => r.status === status);
-    if (from !== null) records = records.filter(r => typeof r.date === 'number' && r.date >= from);
-    if (to !== null) records = records.filter(r => typeof r.date === 'number' && r.date <= to);
+      const dayDate =
+        `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}`;
+
+      if (!isValidDate(dayDate)) {
+        return NextResponse.json(
+          { error: 'Invalid calendar date' },
+          { status: 400 }
+        );
+      }
+
+      conditions.push('DATE(date) = ?');
+      params.push(dayDate);
+    }
+
+    // Filter by starting date
+    if (from) {
+      if (!isValidDate(from)) {
+        return NextResponse.json(
+          { error: 'Invalid from date. Use YYYY-MM-DD.' },
+          { status: 400 }
+        );
+      }
+
+      conditions.push('DATE(date) >= ?');
+      params.push(from);
+    }
+
+    // Filter by ending date
+    if (to) {
+      if (!isValidDate(to)) {
+        return NextResponse.json(
+          { error: 'Invalid to date. Use YYYY-MM-DD.' },
+          { status: 400 }
+        );
+      }
+
+      conditions.push('DATE(date) <= ?');
+      params.push(to);
+    }
+
+    // Search title and location
     if (q) {
-      records = records.filter(r =>
-        (r.title || '').toLowerCase().includes(q) ||
-        (r.location || '').toLowerCase().includes(q)
+      conditions.push(
+        '(LOWER(title) LIKE LOWER(?) OR LOWER(location) LIKE LOWER(?))'
+      );
+
+      params.push(`%${q}%`, `%${q}%`);
+    }
+
+    const whereClause = conditions.length
+      ? `WHERE ${conditions.join(' AND ')}`
+      : '';
+
+    // Count matching records before pagination
+    const [countRows] = await pool.execute(
+      `SELECT COUNT(*) AS total
+       FROM events
+       ${whereClause}`,
+      params
+    );
+
+    const total = Number(countRows[0].total);
+
+    // Fetch the requested page
+    const [rows] = await pool.execute(
+      `SELECT *
+       FROM events
+       ${whereClause}
+       ORDER BY DATE(date) DESC, createdAt DESC
+       LIMIT ? OFFSET ?`,
+      [...params, pageSize, offset]
+    );
+
+    const records = rows.map(normalizeEvent);
+
+    return NextResponse.json({
+      success: true,
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize),
+      records,
+    });
+  } catch (error) {
+    console.error('GET /api/events error:', error);
+
+    return NextResponse.json(
+      { error: 'Failed to fetch events' },
+      { status: 500 }
+    );
+  }
+}
+
+/* =========================================
+   POST /api/events
+   Create an event in MySQL
+========================================= */
+
+export async function POST(req) {
+  try {
+    const body = await req.json();
+
+    // Validate input
+    const parsed = createEventSchema.parse(body);
+
+    if (!isValidDate(parsed.date)) {
+      return NextResponse.json(
+        { error: 'Invalid date. Use YYYY-MM-DD.' },
+        { status: 400 }
       );
     }
 
-    // newest first
-    records.sort((a, b) => (b.date || b.createdAt || 0) - (a.date || a.createdAt || 0));
+    // Generate an event ID
+    const id = `evt-${randomUUID()}`;
+    const now = new Date().toISOString();
 
-    const total = records.length;
-    const start = (page - 1) * pageSize;
-    const pageRecords = records.slice(start, start + pageSize);
-
-    return addCORS(NextResponse.json({ page, pageSize, total, records: pageRecords }));
-  } catch (e) {
-    const status = e.status || 500;
-    return addCORS(NextResponse.json({ error: e.message || 'Server error' }, { status }));
-  }
-}
-
-/* ---------- POST /api/events ----------
-Body:
-{
-  "title": "Annual Conference",
-  "date": "2024-10-26",   // or timestamp (ms)
-  "location": "Convention Center, New York",
-  "description": "Keynotes...",
-  "status": "published"   // optional, default "draft"
-}
----------------------------------------*/
-export async function POST(req) {
-  try {
-    const uid = await requireUid();
-    const body = await req.json();
-
-    const parsed = createEventSchema.parse(body);
-    const dateMs = toMs(parsed.date);
-    const now = Date.now();
-
-    const ref = await rtdb.ref('/events').push({
+    // Event data returned to the frontend
+    const event = {
       title: parsed.title,
-      date: dateMs,
+      description: parsed.description,
+      date: parsed.date,
       location: parsed.location,
-      description: parsed.description || '',
-      status: parsed.status || 'draft',
+      status: parsed.status,
       createdAt: now,
       updatedAt: now,
-      createdBy: uid,
+    };
+
+    // Store the complete event as JSON
+    const recordData = JSON.stringify({
+      id,
+      ...event,
     });
 
-    const id = ref.key;
-    await rtdb.ref(`/eventsByDate/${yyyymmdd(dateMs)}/${id}`).set(true);
+    // Every column with a JSON_VALID constraint must receive valid JSON.
+    await pool.execute(
+      `INSERT INTO events (
+        firebase_key,
+        record_data,
+        title,
+        description,
+        date,
+        location,
+        status,
+        createdAt,
+        updatedAt
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        recordData,
+        JSON.stringify(parsed.title),
+        JSON.stringify(parsed.description),
+        JSON.stringify(parsed.date),
+        JSON.stringify(parsed.location),
+        JSON.stringify(parsed.status),
+        JSON.stringify(now),
+        JSON.stringify(now),
+      ]
+    );
 
-    return addCORS(NextResponse.json({ id }, { status: 201 }));
-  } catch (e) {
-    const status = e.status || 500;
-    return addCORS(NextResponse.json({ error: e.message || 'Server error' }, { status }));
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Event created successfully',
+        data: {
+          id,
+          ...event,
+        },
+      },
+      { status: 201 }
+    );
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: error.issues,
+        },
+        { status: 400 }
+      );
+    }
+
+    console.error('POST /api/events error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Failed to create event',
+        details: error.message,
+      },
+      { status: 500 }
+    );
   }
 }

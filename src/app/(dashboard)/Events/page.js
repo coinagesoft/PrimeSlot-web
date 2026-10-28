@@ -1,46 +1,9 @@
 
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
-const INITIAL_EVENTS = [
-  {
-    id: "evt-1",
-    title: "PrimeSlot Business Connect",
-    description:
-      "Connect with business owners, exchange ideas, and explore new collaboration opportunities.",
-    date: "2026-10-25",
-    location: "Pune, Maharashtra",
-    status: "published",
-  },
-  {
-    id: "evt-2",
-    title: "Founders Networking Meetup",
-    description:
-      "An interactive networking session for founders and entrepreneurs to share their experiences.",
-    date: "2026-10-29",
-    location: "Mumbai, Maharashtra",
-    status: "published",
-  },
-  {
-    id: "evt-3",
-    title: "Industry Leaders Roundtable",
-    description:
-      "Discuss industry trends, business growth strategies, and opportunities for collaboration.",
-    date: "2026-11-04",
-    location: "Bengaluru, Karnataka",
-    status: "draft",
-  },
-  {
-    id: "evt-4",
-    title: "Monthly Member Mixer",
-    description:
-      "Meet fellow members, build meaningful connections, and discover new business opportunities.",
-    date: "2026-11-12",
-    location: "Pune, Maharashtra",
-    status: "published",
-  },
-];
+
 
 const INITIAL_EVENT_DATA = {
   title: "",
@@ -232,7 +195,9 @@ function EventCard({ event, onEdit, onDelete }) {
 
 export default function EventsPage() {
   // Demo data only. API integration will be added in the next stage.
-  const [events, setEvents] = useState(INITIAL_EVENTS);
+  const [events, setEvents] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [apiError, setApiError] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [currentEvent, setCurrentEvent] = useState(INITIAL_EVENT_DATA);
@@ -244,6 +209,36 @@ export default function EventsPage() {
   const [formError, setFormError] = useState("");
   const [notice, setNotice] = useState("");
   const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const fetchEvents = async () => {
+    try {
+      setApiError("");
+
+      const response = await fetch("/api/events", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to fetch events.");
+      }
+
+      setEvents(Array.isArray(result.records) ? result.records : []);
+    } catch (error) {
+      console.error("Error fetching events:", error);
+      setApiError(error.message || "Unable to load events.");
+      throw error;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchEvents();
+  }, []);
+
 
   const stats = useMemo(() => {
     const today = new Date();
@@ -328,6 +323,7 @@ export default function EventsPage() {
   const openEditModal = (event) => {
     setIsEditMode(true);
     setEditingId(event.id);
+
     setCurrentEvent({
       title: event.title || "",
       description: event.description || "",
@@ -335,6 +331,7 @@ export default function EventsPage() {
       location: event.location || "",
       status: (event.status || "published").toLowerCase(),
     });
+
     setFormError("");
     setNotice("");
     setIsModalOpen(true);
@@ -360,6 +357,7 @@ export default function EventsPage() {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+
     if (isSaving) return;
 
     const title = currentEvent.title.trim();
@@ -367,48 +365,75 @@ export default function EventsPage() {
     const description = currentEvent.description.trim();
 
     if (!title || !currentEvent.date || !location) {
-      setFormError("Please complete the event title, date, and location.");
+      setFormError(
+        "Please complete the event title, date, and location."
+      );
       return;
     }
 
     setIsSaving(true);
     setFormError("");
+    setNotice("");
+    setApiError("");
 
     try {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      const payload = {
+        title,
+        description,
+        date: currentEvent.date,
+        location,
+        status: currentEvent.status,
+      };
 
-      if (isEditMode) {
-        setEvents((previous) =>
-          previous.map((item) =>
-            item.id === editingId
-              ? {
-                  ...item,
-                  ...currentEvent,
-                  title,
-                  location,
-                  description,
-                }
-              : item
-          )
+      // POST creates a new event; PUT updates an existing event.
+      const url = isEditMode
+        ? `/api/events/${encodeURIComponent(editingId)}`
+        : "/api/events";
+
+      const method = isEditMode ? "PUT" : "POST";
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.details ||
+          result.error ||
+          result.message ||
+          `Failed to ${isEditMode ? "update" : "create"} event.`
         );
-
-        setNotice("Event updated successfully.");
-      } else {
-        const newEvent = {
-          ...currentEvent,
-          id: `evt-${Date.now()}`,
-          title,
-          location,
-          description,
-        };
-
-        setEvents((previous) => [newEvent, ...previous]);
-        setNotice("Event created successfully.");
       }
 
+      if (result.success === false) {
+        throw new Error(result.error || "The operation failed.");
+      }
+
+      // Reload the list from MySQL to keep the UI synchronized.
+      await fetchEvents();
+
+      setNotice(
+        isEditMode
+          ? "Event updated successfully."
+          : "Event created successfully."
+      );
+
       setIsModalOpen(false);
-    } catch {
-      setFormError("Unable to save the event. Please try again.");
+      setCurrentEvent({ ...INITIAL_EVENT_DATA });
+      setEditingId(null);
+      setIsEditMode(false);
+    } catch (error) {
+      console.error("Error saving event:", error);
+
+      setFormError(
+        error.message || "Unable to save the event. Please try again."
+      );
     } finally {
       setIsSaving(false);
     }
@@ -421,15 +446,49 @@ export default function EventsPage() {
     setDeleteTarget(event);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (!deleteTarget) return;
 
-    setEvents((previous) =>
-      previous.filter((event) => event.id !== deleteTarget.id)
-    );
+    const eventToDelete = deleteTarget;
 
-    setNotice(`"${deleteTarget.title}" was deleted.`);
-    setDeleteTarget(null);
+    try {
+      setApiError("");
+
+      const response = await fetch(
+        `/api/events/${encodeURIComponent(eventToDelete.id)}`,
+        {
+          method: "DELETE",
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.error ||
+          result.message ||
+          "Failed to delete the event."
+        );
+      }
+
+      if (result.success === false) {
+        throw new Error(result.error || "Failed to delete the event.");
+      }
+
+      // Update the UI only after the database deletion succeeds.
+      setEvents((previous) =>
+        previous.filter((event) => event.id !== eventToDelete.id)
+      );
+
+      setNotice(`"${eventToDelete.title}" was deleted successfully.`);
+      setDeleteTarget(null);
+    } catch (error) {
+      console.error("Error deleting event:", error);
+
+      setApiError(
+        error.message || "Unable to delete the event. Please try again."
+      );
+    }
   };
 
   const clearFilters = () => {
@@ -473,7 +532,20 @@ export default function EventsPage() {
           />
         </div>
       )}
+      {apiError && (
+        <div className="alert alert-danger" role="alert">
+          <i className="ri-error-warning-line me-2" />
+          {apiError}
 
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-danger ms-3"
+            onClick={fetchEvents}
+          >
+            Retry
+          </button>
+        </div>
+      )}
       <div className="row g-4 mb-4">
         <div className="col-6 col-xl-3">
           <div className="card h-100">
@@ -626,7 +698,7 @@ export default function EventsPage() {
         </span>
       </div>
 
-      {filteredEvents.length === 0 ? (
+      {isLoading ? (
         <div className="card">
           <div className="card-body text-center py-5">
             <div
@@ -696,9 +768,31 @@ export default function EventsPage() {
           <div
             className="modal-dialog modal-dialog-centered modal-dialog-scrollable"
             role="document"
+            style={{
+              maxWidth: "720px",
+              height: "calc(100vh - 2rem)",
+              maxHeight: "calc(100vh - 2rem)",
+              marginTop: "1rem",
+              marginBottom: "1rem",
+            }}
           >
-            <div className="modal-content">
-              <form onSubmit={handleSubmit}>
+            <div
+              className="modal-content"
+              style={{
+                height: "100%",
+                maxHeight: "100%",
+                overflow: "hidden",
+              }}
+            >
+             <form
+  onSubmit={handleSubmit}
+  style={{
+    display: "flex",
+    flexDirection: "column",
+    height: "100%",
+    minHeight: 0,
+  }}
+>
                 <div className="modal-header">
                   <div>
                     <h5 className="modal-title mb-1" id="eventModalTitle">
@@ -824,7 +918,15 @@ export default function EventsPage() {
                   </div>
                 </div>
 
-                <div className="modal-footer">
+                <div
+                  className="modal-footer"
+                  style={{
+                    flexShrink: 0,
+                    backgroundColor: "#fff",
+                    position: "relative",
+                    zIndex: 2,
+                  }}
+                >
                   <button
                     type="button"
                     className="btn btn-label-secondary"
@@ -850,9 +952,8 @@ export default function EventsPage() {
                     ) : (
                       <>
                         <i
-                          className={`${
-                            isEditMode ? "ri-save-line" : "ri-add-line"
-                          } me-1`}
+                          className={`${isEditMode ? "ri-save-line" : "ri-add-line"
+                            } me-1`}
                         />
                         {isEditMode ? "Save changes" : "Create event"}
                       </>

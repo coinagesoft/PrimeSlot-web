@@ -1,266 +1,424 @@
 // src/app/api/meetings/route.js
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
 
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { adminAuth, rtdb } from '@/lib/firebaseAdmin';
-import jwt from 'jsonwebtoken';
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-const ADMIN_COOKIE = 'admin_session';
-const JWT_COOKIE = 'session';
-const JWT_SECRET = process.env.JWT_SECRET || 'MySuperSecretJWTSecret';
-const DISABLE_AUTH = process.env.DISABLE_AUTH === 'true';
+import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import pool from "../../../lib/db";
+import jwt from "jsonwebtoken";
 
-function addCORS(res) {
-  res.headers.set('Access-Control-Allow-Origin', '*');
-  res.headers.set('Access-Control-Allow-Methods', 'GET,OPTIONS');
-  res.headers.set(
-    'Access-Control-Allow-Headers',
-    'Content-Type, Authorization'
+// ======================================================
+// CONFIGURATION
+// ======================================================
+
+const ADMIN_COOKIE = "admin_session";
+const JWT_COOKIE = "session";
+
+const JWT_SECRET = process.env.JWT_SECRET;
+const DISABLE_AUTH = process.env.DISABLE_AUTH === "true";
+
+// ======================================================
+// CORS
+// ======================================================
+
+function addCORS(response) {
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+  response.headers.set(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization"
   );
-  return res;
+
+  return response;
+}
+
+function jsonResponse(data, status = 200) {
+  return addCORS(NextResponse.json(data, { status }));
 }
 
 export async function OPTIONS() {
-  return addCORS(NextResponse.json({}, { status: 204 }));
+  return jsonResponse({}, 200);
 }
 
-async function requireUser(req) {
-  if (DISABLE_AUTH) return { mode: 'test', uid: 'TEST_USER' };
+// ======================================================
+// JSON VALUE DECODER
+// ======================================================
 
-  const jar = await cookies();
+/**
+ * Decode JSON-encoded values stored in MySQL.
+ *
+ * Examples:
+ *   '"approved"' -> 'approved'
+ *   '"member123"' -> 'member123'
+ *   'true' -> true
+ *   '123' -> 123
+ *   '{"name":"Test"}' -> { name: "Test" }
+ *
+ * Ordinary strings remain unchanged.
+ */
+function decodeJsonValue(value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
 
-  // 1) try Bearer token (JWT from verify-widget-token)
-  const auth =
-    req.headers.get('authorization') ||
-    req.headers.get('Authorization') ||
-    '';
-  if (auth && auth.startsWith('Bearer ')) {
-    const token = auth.slice('Bearer '.length).trim();
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+// ======================================================
+// MEMBER AUTHENTICATION
+// ======================================================
+
+/**
+ * Authenticate using:
+ *
+ * 1. DISABLE_AUTH test mode, if enabled.
+ * 2. Bearer JWT.
+ * 3. JWT session cookie.
+ *
+ * This endpoint only allows authenticated members.
+ */
+async function requireUser(request) {
+  if (DISABLE_AUTH) {
+    return {
+      mode: "test",
+      uid: "TEST_MEMBER_001",
+    };
+  }
+
+  if (!JWT_SECRET) {
+    throw Object.assign(
+      new Error("JWT_SECRET is not configured."),
+      { status: 500 }
+    );
+  }
+
+  // ----------------------------------------------------
+  // 1. Bearer JWT
+  // ----------------------------------------------------
+
+  const authorization = request.headers.get("authorization") || "";
+
+  if (authorization.startsWith("Bearer ")) {
+    const token = authorization.slice(7).trim();
+
     try {
       const payload = jwt.verify(token, JWT_SECRET);
-      return { mode: 'member', uid: payload.sub, payload };
-    } catch (e) {
-      // ignore, try cookie
+
+      if (
+        payload &&
+        typeof payload.sub === "string" &&
+        payload.sub.trim()
+      ) {
+        return {
+          mode: "member",
+          uid: payload.sub,
+          payload,
+        };
+      }
+    } catch {
+      // Continue to cookie authentication.
     }
   }
 
-  // 2) try JWT cookie fallback
-  const token = jar.get(JWT_COOKIE)?.value;
-  if (token && JWT_SECRET) {
+  // ----------------------------------------------------
+  // 2. JWT session cookie
+  // ----------------------------------------------------
+
+  const cookieStore = await cookies();
+  const sessionToken = cookieStore.get(JWT_COOKIE)?.value;
+
+  if (sessionToken) {
     try {
-      const payload = jwt.verify(token, JWT_SECRET);
-      return { mode: 'member', uid: payload.sub, payload };
-    } catch (e) {
-      // ignore, try admin
+      const payload = jwt.verify(sessionToken, JWT_SECRET);
+
+      if (
+        payload &&
+        typeof payload.sub === "string" &&
+        payload.sub.trim()
+      ) {
+        return {
+          mode: "member",
+          uid: payload.sub,
+          payload,
+        };
+      }
+    } catch {
+      // Continue to the admin-cookie check.
     }
   }
 
-  // 3) fallback: admin_session
-  const session = jar.get(ADMIN_COOKIE)?.value;
-  if (!session)
-    throw Object.assign(new Error('Unauthorized'), { status: 401 });
-  const decoded = await adminAuth.verifySessionCookie(session, true);
-  return { mode: 'admin', uid: decoded.uid, decoded };
+  // ----------------------------------------------------
+  // 3. Admin cookie
+  // ----------------------------------------------------
+
+  const adminSession = cookieStore.get(ADMIN_COOKIE)?.value;
+
+  if (adminSession) {
+    throw Object.assign(
+      new Error("Admin sessions cannot access this member endpoint."),
+      { status: 403 }
+    );
+  }
+
+  throw Object.assign(
+    new Error("Unauthorized"),
+    { status: 401 }
+  );
 }
 
-// Robust approved check - supports multiple possible schema variants
-function isMeetingApproved(meetingObj) {
-  if (!meetingObj || typeof meetingObj !== 'object') return false;
+// ======================================================
+// MEETING NORMALIZATION
+// ======================================================
 
-  // explicit boolean flags
-  if (meetingObj.approved === true) return true;
-  if (meetingObj.isApproved === true) return true;
+/**
+ * Convert a MySQL meeting row into the API response format.
+ *
+ * record_data may contain additional meeting properties.
+ * Explicit database columns take precedence over record_data.
+ */
+function normalizeMeeting(row) {
+  let record = {};
 
-  // string status / approval fields
-  if (
-    typeof meetingObj.status === 'string' &&
-    meetingObj.status.toLowerCase() === 'approved'
-  )
+  if (row.record_data) {
+    const decodedRecord = decodeJsonValue(row.record_data);
+
+    if (
+      decodedRecord &&
+      typeof decodedRecord === "object" &&
+      !Array.isArray(decodedRecord)
+    ) {
+      record = decodedRecord;
+    }
+  }
+
+  return {
+    ...record,
+
+    meetingId: row.firebase_key,
+
+    aId: decodeJsonValue(row.aId),
+    bId: decodeJsonValue(row.bId),
+
+    mode: decodeJsonValue(row.mode),
+    notes: decodeJsonValue(row.notes),
+    place: decodeJsonValue(row.place),
+
+    status: decodeJsonValue(row.status),
+    eventId: decodeJsonValue(row.eventId),
+    outcome: decodeJsonValue(row.outcome),
+
+    createdAt: decodeJsonValue(row.createdAt),
+    createdBy: decodeJsonValue(row.createdBy),
+    updatedAt: decodeJsonValue(row.updatedAt),
+
+    durationMin: decodeJsonValue(row.durationMin),
+    scheduledAt: decodeJsonValue(row.scheduledAt),
+
+    businessGivenByA: decodeJsonValue(row.businessGivenByA),
+    businessGivenByB: decodeJsonValue(row.businessGivenByB),
+
+    referralsGivenByA: decodeJsonValue(row.referralsGivenByA),
+    referralsGivenByB: decodeJsonValue(row.referralsGivenByB),
+
+    topic: decodeJsonValue(row.topic),
+  };
+}
+
+// ======================================================
+// APPROVAL CHECK
+// ======================================================
+
+/**
+ * Preserve the approval checks from the existing API.
+ *
+ * A meeting is approved when one of these conditions holds:
+ *
+ * - approved === true
+ * - isApproved === true
+ * - status === "approved"
+ * - approval === "approved"
+ * - approvedAt exists
+ */
+function isMeetingApproved(meeting) {
+  if (!meeting || typeof meeting !== "object") {
+    return false;
+  }
+
+  const approved = decodeJsonValue(meeting.approved);
+  const isApproved = decodeJsonValue(meeting.isApproved);
+
+  const status = decodeJsonValue(meeting.status);
+  const approval = decodeJsonValue(meeting.approval);
+
+  const approvedAt = decodeJsonValue(meeting.approvedAt);
+
+  if (approved === true || isApproved === true) {
     return true;
-  if (
-    typeof meetingObj.approval === 'string' &&
-    meetingObj.approval.toLowerCase() === 'approved'
-  )
-    return true;
+  }
 
-  // presence of timestamp / approvedAt
-  if (meetingObj.approvedAt) return true;
+  if (
+    typeof status === "string" &&
+    status.trim().toLowerCase() === "approved"
+  ) {
+    return true;
+  }
+
+  if (
+    typeof approval === "string" &&
+    approval.trim().toLowerCase() === "approved"
+  ) {
+    return true;
+  }
+
+  if (approvedAt) {
+    return true;
+  }
 
   return false;
 }
 
-export async function GET(req) {
-  try {
-    const user = await requireUser(req);
+// ======================================================
+// EVENT ID NORMALIZATION
+// ======================================================
 
-    // Only allow member mode, as the task is for users in the token
-    if (user.mode !== 'member') {
-      return addCORS(
-        NextResponse.json({ error: 'Not allowed' }, { status: 403 })
+/**
+ * Standalone meetings must return eventId: null.
+ */
+function normalizeEventId(eventId) {
+  if (
+    eventId === null ||
+    eventId === undefined ||
+    eventId === "" ||
+    eventId === "undefined" ||
+    eventId === "standalone"
+  ) {
+    return null;
+  }
+
+  return String(eventId);
+}
+
+// ======================================================
+// GET /api/meetings
+// ======================================================
+
+/**
+ * Fetch approved meetings associated with the authenticated member.
+ *
+ * MySQL table:
+ *   meetings
+ *
+ * Expected columns include:
+ *   firebase_key
+ *   record_data
+ *   aId
+ *   bId
+ *   eventId
+ *   status
+ *   scheduledAt
+ *
+ * This implementation assumes aId and bId contain the
+ * participating member IDs.
+ */
+export async function GET(request) {
+  try {
+    // --------------------------------------------------
+    // 1. Authenticate user
+    // --------------------------------------------------
+
+    const user = await requireUser(request);
+
+    if (user.mode !== "member" && user.mode !== "test") {
+      return jsonResponse(
+        { error: "Not allowed" },
+        403
       );
     }
 
-    const memberId = user.uid;
+    const memberId = String(user.uid);
 
-    // Query memberMeetings for the member
-    const memberMeetingsRef = rtdb.ref(`/memberMeetings/${memberId}`);
-    const memberMeetingsSnap = await memberMeetingsRef.once('value');
-    const memberMeetings = memberMeetingsSnap.val();
+    // --------------------------------------------------
+    // 2. Find meetings associated with this member
+    // --------------------------------------------------
 
-    if (!memberMeetings) {
-      return addCORS(NextResponse.json({ meetings: [] }, { status: 200 }));
-    }
+    /*
+     * Some imported values are stored as plain strings;
+     * others are JSON-encoded strings.
+     *
+     * Example:
+     *   member123
+     *   "member123"
+     */
 
-    const allMeetings = [];
+    const rawId = memberId;
+    const jsonId = JSON.stringify(memberId);
 
-    // Helper to fetch and push meeting into allMeetings if approved
-    const pushMeetingIfApproved = (meetingId, eventIdForRecord, fullMeeting) => {
-      if (!isMeetingApproved(fullMeeting)) return; // skip unapproved
-      // normalize eventId for standalone to null
-      const normalizedEventId =
-        eventIdForRecord === 'standalone' ||
-        eventIdForRecord === null ||
-        eventIdForRecord === 'undefined'
-          ? null
-          : eventIdForRecord;
-      allMeetings.push({
-        meetingId,
-        eventId: normalizedEventId,
-        ...fullMeeting,
+    const [rows] = await pool.execute(
+      `
+        SELECT *
+        FROM meetings
+        WHERE aId IN (?, ?)
+           OR bId IN (?, ?)
+        ORDER BY scheduledAt DESC
+      `,
+      [
+        rawId,
+        jsonId,
+        rawId,
+        jsonId,
+      ]
+    );
+
+    // --------------------------------------------------
+    // 3. Normalize and filter meetings
+    // --------------------------------------------------
+
+    const meetings = [];
+
+    for (const row of rows) {
+      const meeting = normalizeMeeting(row);
+
+      // Return only approved meetings.
+      if (!isMeetingApproved(meeting)) {
+        continue;
+      }
+
+      meetings.push({
+        ...meeting,
+        eventId: normalizeEventId(meeting.eventId),
       });
-    };
-
-    // For each key under memberMeetings
-    for (const eventIdKey of Object.keys(memberMeetings)) {
-      // skip if value falsy
-      const eventMeetings = memberMeetings[eventIdKey];
-      if (!eventMeetings) continue;
-
-      // Case A: eventIdKey === 'standalone' --> meetings stored in meetings_standalone
-      if (eventIdKey === 'standalone') {
-        for (const meetingId of Object.keys(eventMeetings)) {
-          try {
-            // attempt to read from meetings_standalone
-            const snap = await rtdb
-              .ref(`/meetings_standalone/${meetingId}`)
-              .get();
-            if (snap.exists()) {
-              const val = snap.val();
-              pushMeetingIfApproved(meetingId, null, val);
-            } else {
-              // fallback: maybe was stored under /meetings/<someEvent>/<meetingId>
-              const fallbackSnap = await rtdb.ref(`/meetings/${meetingId}`).get();
-              if (fallbackSnap.exists()) {
-                const val = fallbackSnap.val();
-                pushMeetingIfApproved(meetingId, null, val);
-              }
-            }
-          } catch (err) {
-            // ignore single-item failure, continue
-            console.error(
-              'Error fetching standalone meeting',
-              meetingId,
-              err.message || err
-            );
-          }
-        }
-        continue;
-      }
-
-      // Case B: eventIdKey is 'undefined' --> treat as standalone fallback
-      if (eventIdKey === 'undefined') {
-        for (const meetingId of Object.keys(eventMeetings)) {
-          try {
-            const snap = await rtdb
-              .ref(`/meetings_standalone/${meetingId}`)
-              .get();
-            if (snap.exists()) {
-              pushMeetingIfApproved(meetingId, null, snap.val());
-            } else {
-              // fallback: try /meetings/undefined/meetingId (if present)
-              const fallbackSnap = await rtdb
-                .ref(`/meetings/undefined/${meetingId}`)
-                .get();
-              if (fallbackSnap.exists()) {
-                pushMeetingIfApproved(meetingId, null, fallbackSnap.val());
-              }
-            }
-          } catch (err) {
-            console.error(
-              'Error fetching undefined-group meeting',
-              meetingId,
-              err.message || err
-            );
-          }
-        }
-        continue;
-      }
-
-      // General case: eventIdKey is an event id
-      for (const meetingId of Object.keys(eventMeetings)) {
-        try {
-          // Quick-check: memberMeetings may contain metadata per meeting (to avoid extra reads)
-          const meta = eventMeetings[meetingId];
-          if (meta && typeof meta === 'object') {
-            // If metadata explicitly indicates not-approved, skip early
-            if (
-              meta.approved === false ||
-              meta.isApproved === false ||
-              (typeof meta.status === 'string' &&
-                meta.status.toLowerCase() === 'pending')
-            ) {
-              continue;
-            }
-            // If metadata explicitly indicates approved, we can try to fetch and push (still fetch to return full meeting)
-            // fallthrough to fetch actual meeting node
-          }
-
-          // Try event-based meeting node first
-          const fullMeetingSnap = await rtdb
-            .ref(`/meetings/${eventIdKey}/${meetingId}`)
-            .once('value');
-          if (fullMeetingSnap.exists()) {
-            pushMeetingIfApproved(meetingId, eventIdKey, fullMeetingSnap.val());
-            continue;
-          }
-
-          // If not found under /meetings/{eventId}/{meetingId}, maybe it's stored as standalone
-          const standaloneSnap = await rtdb
-            .ref(`/meetings_standalone/${meetingId}`)
-            .once('value');
-          if (standaloneSnap.exists()) {
-            pushMeetingIfApproved(meetingId, null, standaloneSnap.val());
-            continue;
-          }
-
-          // Final fallback: sometimes stored under /meetings/{meetingId} (rare)
-          const altSnap = await rtdb.ref(`/meetings/${meetingId}`).once('value');
-          if (altSnap.exists()) {
-            pushMeetingIfApproved(meetingId, null, altSnap.val());
-            continue;
-          }
-
-          // Not found anywhere — skip
-        } catch (err) {
-          console.error(
-            'Error fetching meeting',
-            eventIdKey,
-            meetingId,
-            err.message || err
-          );
-        }
-      }
     }
 
-    return addCORS(NextResponse.json({ meetings: allMeetings }, { status: 200 }));
-  } catch (e) {
-    return addCORS(
-      NextResponse.json(
-        { error: e.message || 'Server error' },
-        { status: e.status || 500 }
-      )
+    // --------------------------------------------------
+    // 4. Return API response
+    // --------------------------------------------------
+
+    return jsonResponse(
+      {
+        meetings,
+      },
+      200
+    );
+  } catch (error) {
+    console.error(
+      "GET /api/meetings error:",
+      error
+    );
+
+    return jsonResponse(
+      {
+        error: error.message || "Failed to fetch meetings.",
+      },
+      error.status || 500
     );
   }
 }
