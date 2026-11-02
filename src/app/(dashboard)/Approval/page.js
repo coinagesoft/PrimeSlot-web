@@ -380,8 +380,38 @@ export default function ProfileApprovalsPage() {
         .profile-approvals-page .form-control, .profile-approvals-page .form-select, .pa-modal .form-control { min-height: 42px; font-size: 0.875rem; border-radius: 0.5rem; }
         .profile-approvals-page .form-control:focus, .profile-approvals-page .form-select:focus, .pa-modal .form-control:focus { border-color: var(--pa-primary); box-shadow: 0 0 0 0.15rem rgba(105,108,255,.15); }
         .profile-approvals-page .btn, .pa-modal .btn { min-height: 38px; font-size: 0.875rem; font-weight: 500; border-radius: 0.5rem; padding: 0.5rem 0.875rem; display: inline-flex; align-items: center; justify-content: center; gap: .25rem; }
-        .profile-approvals-page .btn-primary, .pa-modal .btn-primary { background: var(--pa-primary); border-color: var(--pa-primary); }
-        .profile-approvals-page .btn-primary:hover, .pa-modal .btn-primary:hover { background: #5f62e6; border-color: #5f62e6; }
+       /* Keep the Approve button purple even when not hovered */
+.pa-modal .btn.btn-primary {
+  background-color: #696cff !important;
+  border-color: #696cff !important;
+  color: #ffffff !important;
+  opacity: 1;
+}
+
+/* Hover effect */
+.pa-modal .btn.btn-primary:hover {
+  background-color: #5f62e6 !important;
+  border-color: #5f62e6 !important;
+  color: #ffffff !important;
+}
+
+/* Keyboard focus */
+.pa-modal .btn.btn-primary:focus,
+.pa-modal .btn.btn-primary:focus-visible {
+  background-color: #696cff !important;
+  border-color: #696cff !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 0.2rem rgba(105, 108, 255, 0.25);
+}
+
+/* Disabled state while processing */
+.pa-modal .btn.btn-primary:disabled {
+  background-color: #696cff !important;
+  border-color: #696cff !important;
+  color: #ffffff !important;
+  opacity: 0.65;
+  cursor: not-allowed;
+}
         .profile-approvals-page .btn-icon, .pa-modal .btn-icon { width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; }
         .profile-approvals-page .table { font-size: .875rem; margin-bottom: 0; }
         .profile-approvals-page .table > :not(caption) > * > * { padding: .9rem 1rem; vertical-align: middle; }

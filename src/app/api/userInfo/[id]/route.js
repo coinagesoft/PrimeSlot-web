@@ -124,12 +124,20 @@ export async function PATCH(request, { params }) {
         ? existing.phone
         : String(body.phone).trim();
 
-    const status =
-      body.status === undefined
-        ? existing.is_active
-          ? existing.member_status || "Active"
-          : "Inactive"
-        : String(body.status).trim();
+    // Normalize account status regardless of input casing.
+ const rawStatus =
+  body.status === undefined
+    ? existing.member_status ||
+      (existing.is_active ? "Active" : "Inactive")
+    : String(body.status).trim();
+
+    const statusMap = {
+      active: "Active",
+      inactive: "Inactive",
+      pending: "Pending",
+    };
+
+    const status = statusMap[rawStatus.toLowerCase()];
 
     const role =
       body.role === undefined
@@ -138,44 +146,44 @@ export async function PATCH(request, { params }) {
 
     if (!name || !email) {
       return NextResponse.json(
-        { success: false, message: "Name and email are required." },
+        {
+          success: false,
+          message: "Name and email are required.",
+        },
         { status: 400 }
       );
     }
 
+    // Validate email address.
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return NextResponse.json(
-        { success: false, message: "Enter a valid email address." },
+        {
+          success: false,
+          message: "Enter a valid email address.",
+        },
         { status: 400 }
       );
     }
 
-   if (!VALID_STATUSES.includes(status) || !role) {
-  console.error("Member validation failed:", {
-    receivedStatus: body.status,
-    normalizedStatus: status,
-    allowedStatuses: VALID_STATUSES,
-    receivedRole: body.role,
-    normalizedRole: role,
-    existingRole: existing.role,
-  });
-
-  return NextResponse.json(
-    {
-      success: false,
-      message: "Invalid role or account status.",
-      debug: {
+    // Validate normalized status and role.
+    if (!status || !VALID_STATUSES.includes(status) || !role) {
+      console.error("Member validation failed:", {
         receivedStatus: body.status,
-        normalizedStatus: status,
+        normalizedStatus: status ?? rawStatus,
         allowedStatuses: VALID_STATUSES,
         receivedRole: body.role,
         normalizedRole: role,
         existingRole: existing.role,
-      },
-    },
-    { status: 400 }
-  );
-}
+      });
+
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Invalid role or account status.",
+        },
+        { status: 400 }
+      );
+    }
 
     // Do not silently claim to update a role that is not stored on members.
     if (role !== normalizeRole(existing.role)) {
@@ -231,7 +239,10 @@ export async function PATCH(request, { params }) {
     }
 
     return NextResponse.json(
-      { success: false, message: "Failed to update member." },
+      {
+        success: false,
+        message: "Failed to update member.",
+      },
       { status: 500 }
     );
   }
