@@ -1,165 +1,9 @@
 
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 
-const DEMO_EVENTS = [
-  { id: "evt-1", title: "PrimeSlot Business Connect" },
-  { id: "evt-2", title: "Founders Networking Meetup" },
-  { id: "evt-3", title: "Industry Leaders Roundtable" },
-  { id: "evt-4", title: "Monthly Member Mixer" },
-];
 
-const DEMO_MEMBERS = {
-  m1: {
-    id: "m1",
-    name: "Aarav Mehta",
-    company: "Mehta Advisory",
-    initials: "AM",
-    color: "primary",
-  },
-  m2: {
-    id: "m2",
-    name: "Priya Shah",
-    company: "Shah Ventures",
-    initials: "PS",
-    color: "success",
-  },
-  m3: {
-    id: "m3",
-    name: "Rohan Kulkarni",
-    company: "RK Digital",
-    initials: "RK",
-    color: "info",
-  },
-  m4: {
-    id: "m4",
-    name: "Neha Desai",
-    company: "Desai Finance",
-    initials: "ND",
-    color: "warning",
-  },
-  m5: {
-    id: "m5",
-    name: "Karan Patel",
-    company: "KP Solutions",
-    initials: "KP",
-    color: "danger",
-  },
-};
-
-const DEMO_MEETINGS = [
-  {
-    id: "mt-1",
-    eventId: "evt-1",
-    aId: "m1",
-    bId: "m2",
-    scheduledAt: "2026-10-21T11:30:00",
-    outcome: "Discussed a potential business partnership and future collaboration.",
-    businessGivenByA: 3,
-    businessGivenByB: 2,
-    status: "Completed",
-  },
-  {
-    id: "mt-2",
-    eventId: "evt-1",
-    aId: "m3",
-    bId: "m4",
-    scheduledAt: "2026-10-21T14:00:00",
-    outcome: "Initial discussion about a new digital transformation project.",
-    businessGivenByA: 1,
-    businessGivenByB: 4,
-    status: "Scheduled",
-  },
-  {
-    id: "mt-3",
-    eventId: "evt-1",
-    aId: "m2",
-    bId: "m5",
-    scheduledAt: "2026-10-22T10:00:00",
-    outcome: "Exploring opportunities for business referrals.",
-    businessGivenByA: 2,
-    businessGivenByB: 1,
-    status: "Scheduled",
-  },
-  {
-    id: "mt-4",
-    eventId: "evt-2",
-    aId: "m1",
-    bId: "m3",
-    scheduledAt: "2026-10-23T16:00:00",
-    outcome: "Shared industry insights and potential client introductions.",
-    businessGivenByA: 5,
-    businessGivenByB: 2,
-    status: "Completed",
-  },
-  {
-    id: "mt-5",
-    eventId: "evt-2",
-    aId: "m4",
-    bId: "m5",
-    scheduledAt: "2026-10-24T12:00:00",
-    outcome: "Meeting rescheduled; awaiting confirmation of the next date.",
-    businessGivenByA: 0,
-    businessGivenByB: 0,
-    status: "Canceled",
-  },
-  {
-    id: "mt-6",
-    eventId: "evt-3",
-    aId: "m2",
-    bId: "m3",
-    scheduledAt: "2026-11-04T15:00:00",
-    outcome: "Discussing a possible strategic partnership.",
-    businessGivenByA: 1,
-    businessGivenByB: 3,
-    status: "Scheduled",
-  },
-  {
-    id: "mt-7",
-    eventId: "evt-4",
-    aId: "m1",
-    bId: "m4",
-    scheduledAt: "2026-11-12T11:00:00",
-    outcome: "Follow-up meeting to discuss shared business opportunities.",
-    businessGivenByA: 2,
-    businessGivenByB: 2,
-    status: "Scheduled",
-  },
-];
-
-const DEMO_MEETING_REQUESTS = [
-  {
-    id: "req-1",
-    eventId: "evt-1",
-    requesterId: "m2",
-    recipientId: "m1",
-    proposedAt: "2026-10-22T12:30:00",
-    message: "I'd like to discuss a possible business collaboration.",
-    status: "Pending",
-    requestedAt: "2026-10-20T10:15:00",
-  },
-  {
-    id: "req-2",
-    eventId: "evt-2",
-    requesterId: "m3",
-    recipientId: "m4",
-    proposedAt: "2026-10-24T15:00:00",
-    message: "Can we connect about digital marketing opportunities?",
-    status: "Pending",
-    requestedAt: "2026-10-20T13:40:00",
-  },
-  {
-    id: "req-3",
-    eventId: "evt-3",
-    requesterId: "m5",
-    recipientId: "m2",
-    proposedAt: "2026-10-25T11:00:00",
-    message: "I would like to explore referral opportunities.",
-    status: "Accepted",
-    requestedAt: "2026-10-18T09:30:00",
-  },
-];
 
 function formatDateTime(value) {
   if (!value) return "Date not set";
@@ -262,17 +106,20 @@ function StatCard({ title, value, subtitle, icon, color }) {
 
 export default function MeetingsPage() {
   // Demo data only. API integration will be added later.
-  const [events] = useState(DEMO_EVENTS);
-  const [members] = useState(DEMO_MEMBERS);
-  const [meetings, setMeetings] = useState(DEMO_MEETINGS);
-  const [meetingRequests, setMeetingRequests] = useState(DEMO_MEETING_REQUESTS);
+const [events, setEvents] = useState([]);
+const [members, setMembers] = useState({});
+const [meetings, setMeetings] = useState([]);
+const [meetingRequests, setMeetingRequests] = useState([]);
 
-  const [selectedEventId, setSelectedEventId] = useState("all");
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [dateFilter, setDateFilter] = useState("all");
-  const [selectedMeeting, setSelectedMeeting] = useState(null);
-  const [notice, setNotice] = useState("");
+const [loading, setLoading] = useState(true);
+const [savingId, setSavingId] = useState(null);
+const [error, setError] = useState("");
+const [selectedEventId, setSelectedEventId] = useState("all");
+const [search, setSearch] = useState("");
+const [statusFilter, setStatusFilter] = useState("all");
+const [dateFilter, setDateFilter] = useState("all");
+const [selectedMeeting, setSelectedMeeting] = useState(null);
+const [notice, setNotice] = useState("");
 
   const filteredMeetings = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -344,6 +191,226 @@ export default function MeetingsPage() {
     dateFilter,
   ]);
 
+const getArray = (response) => {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.data)) return response.data;
+  if (Array.isArray(response?.items)) return response.items;
+  if (Array.isArray(response?.meetings)) return response.meetings;
+  if (Array.isArray(response?.requests)) return response.requests;
+  return [];
+};
+
+const getJson = async (url, options = {}) => {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+    credentials: "include",
+  });
+
+  const result = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(
+      result?.message ||
+      result?.error ||
+      `Request failed with status ${response.status}`
+    );
+  }
+
+  return result;
+};
+
+const normalizeStatus = (status) => {
+  const value = String(status || "").toLowerCase();
+
+  if (["approved", "accepted", "confirmed", "scheduled"].includes(value)) {
+    return "Scheduled";
+  }
+
+  if (["canceled", "cancelled", "rejected"].includes(value)) {
+    return "Canceled";
+  }
+
+  if (value === "completed") {
+    return "Completed";
+  }
+
+  return "Pending";
+};
+
+const normalizeMeeting = (row) => ({
+  ...row,
+  id: String(row.id ?? row.meetingId ?? ""),
+  eventId: String(row.eventId ?? row.event_id ?? ""),
+  aId: String(row.aId ?? row.a_id ?? row.requesterId ?? ""),
+  bId: String(row.bId ?? row.b_id ?? row.recipientId ?? ""),
+  scheduledAt:
+    row.scheduledAt ??
+    row.scheduled_at ??
+    row.proposedAt ??
+    row.proposed_at ??
+    null,
+  outcome: row.outcome ?? row.notes ?? row.topic ?? "",
+  status: normalizeStatus(row.status),
+  businessGivenByA: Number(row.businessGivenByA ?? 0),
+  businessGivenByB: Number(row.businessGivenByB ?? 0),
+});
+
+const normalizeRequest = (row) => {
+  const status = String(row.status || "").toLowerCase();
+
+  return {
+    ...row,
+    id: String(row.id ?? row.meetingId ?? ""),
+    eventId: String(row.eventId ?? row.event_id ?? ""),
+    requesterId: String(
+      row.requesterId ?? row.requester_id ?? row.aId ?? row.a_id ?? ""
+    ),
+    recipientId: String(
+      row.recipientId ?? row.recipient_id ?? row.bId ?? row.b_id ?? ""
+    ),
+    proposedAt:
+      row.proposedAt ??
+      row.proposed_at ??
+      row.scheduledAt ??
+      row.scheduled_at ??
+      null,
+    requestedAt: row.requestedAt ?? row.requested_at ?? null,
+    message: row.message ?? row.notes ?? row.topic ?? "",
+    status:
+      status === "approved" || status === "accepted"
+        ? "Accepted"
+        : ["rejected", "canceled", "cancelled"].includes(status)
+          ? "Rejected"
+          : "Pending",
+  };
+};
+
+const loadPageData = useCallback(async () => {
+  setLoading(true);
+  setError("");
+
+  try {
+    const [meetingsResult, requestsResult] = await Promise.all([
+      getJson("/api/meetings"),
+      getJson("/api/meeting-requests"),
+    ]);
+
+    const meetingRows = getArray(meetingsResult).map(normalizeMeeting);
+    const requestRows = getArray(requestsResult).map(normalizeRequest);
+
+    setMeetings(meetingRows);
+    setMeetingRequests(requestRows);
+
+    // Build a member lookup from member information returned by the APIs.
+    // This supports APIs that return joined member details with each row.
+    const memberMap = {};
+
+    const addMember = (id, details) => {
+      if (!id || !details || typeof details !== "object") return;
+
+      const name =
+        details.name ??
+        details.fullName ??
+        details.full_name ??
+        details.memberName ??
+        details.member_name ??
+        "";
+
+      const company =
+        details.company ??
+        details.companyName ??
+        details.company_name ??
+        "";
+
+      memberMap[String(id)] = {
+        ...details,
+        id: String(id),
+        name: name || "Unknown member",
+        company,
+        initials: name
+          ? name
+              .split(/\s+/)
+              .filter(Boolean)
+              .slice(0, 2)
+              .map((part) => part[0])
+              .join("")
+              .toUpperCase()
+          : "?",
+        color: "primary",
+      };
+    };
+
+    [...meetingRows, ...requestRows].forEach((row) => {
+      addMember(
+        row.aId ?? row.requesterId,
+        row.attendeeA ??
+          row.requester ??
+          row.memberA ??
+          (row.requesterName
+            ? {
+                name: row.requesterName,
+                company: row.requesterCompany,
+              }
+            : null)
+      );
+
+      addMember(
+        row.bId ?? row.recipientId,
+        row.attendeeB ??
+          row.recipient ??
+          row.memberB ??
+          (row.recipientName
+            ? {
+                name: row.recipientName,
+                company: row.recipientCompany,
+              }
+            : null)
+      );
+    });
+
+    setMembers(memberMap);
+
+    // Build an event list from event information returned by the APIs.
+    const eventMap = new Map();
+
+    [...meetingRows, ...requestRows].forEach((row) => {
+      const eventId = row.eventId;
+
+      if (!eventId) return;
+
+      const eventDetails = row.event ?? {};
+      const title =
+        eventDetails.title ??
+        eventDetails.name ??
+        row.eventTitle ??
+        row.eventName ??
+        "Event";
+
+      if (!eventMap.has(String(eventId))) {
+        eventMap.set(String(eventId), {
+          id: String(eventId),
+          title,
+        });
+      }
+    });
+
+    setEvents(Array.from(eventMap.values()));
+  } catch (err) {
+    console.error("Failed to load meetings page:", err);
+    setError(err.message || "Unable to load meetings.");
+  } finally {
+    setLoading(false);
+  }
+}, []);
+
+useEffect(() => {
+  loadPageData();
+}, [loadPageData]);
+
   const stats = useMemo(() => {
     const relevantMeetings =
       selectedEventId === "all"
@@ -379,28 +446,97 @@ export default function MeetingsPage() {
     setDateFilter("all");
   };
 
-  const updateMeetingStatus = (meetingId, status) => {
+const updateMeetingStatus = async (meetingId, status) => {
+  if (!meetingId || savingId) return;
+
+  if (!["Scheduled", "Canceled"].includes(status)) {
+    setError(
+      "This meeting status is not supported by the current database schema."
+    );
+    return;
+  }
+
+  setSavingId(meetingId);
+  setError("");
+  setNotice("");
+
+  try {
+    const savedResult = await getJson(
+      `/api/meetings/${encodeURIComponent(meetingId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }
+    );
+
+    const savedRow = savedResult?.meeting ?? savedResult?.data ?? null;
+
+    const savedStatus = normalizeStatus(
+      savedRow?.status ?? status
+    );
+
     setMeetings((previous) =>
       previous.map((meeting) =>
-        meeting.id === meetingId ? { ...meeting, status } : meeting
+        meeting.id === meetingId
+          ? { ...meeting, ...(savedRow || {}), status: savedStatus }
+          : meeting
       )
     );
 
     setSelectedMeeting((previous) =>
-      previous?.id === meetingId ? { ...previous, status } : previous
+      previous?.id === meetingId
+        ? { ...previous, ...(savedRow || {}), status: savedStatus }
+        : previous
     );
 
-    setNotice(`Meeting status changed to ${status}.`);
-  };
+    setNotice("Meeting status updated successfully.");
+  } catch (err) {
+    console.error("Failed to update meeting status:", err);
+    setError(err.message || "Unable to update meeting status.");
+  } finally {
+    setSavingId(null);
+  }
+};
 
-  const updateRequestStatus = (requestId, status) => {
+const updateRequestStatus = async (requestId, status) => {
+  if (!requestId || savingId) return;
+
+  const action = status === "Accepted" ? "accept" : "reject";
+
+  setSavingId(requestId);
+  setError("");
+  setNotice("");
+
+  try {
+    await getJson(
+      `/api/meeting-requests/${encodeURIComponent(requestId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ action }),
+      }
+    );
+
     setMeetingRequests((previous) =>
       previous.map((request) =>
-        request.id === requestId ? { ...request, status } : request
+        request.id === requestId
+          ? { ...request, status }
+          : request
       )
     );
-    setNotice(`Meeting request ${status.toLowerCase()}.`);
-  };
+
+    setNotice(
+      `Meeting request ${status.toLowerCase()} successfully.`
+    );
+
+    // Refresh server data after the decision is saved.
+    await loadPageData();
+  } catch (err) {
+    console.error("Failed to update meeting request:", err);
+    setError(err.message || "Unable to update meeting request.");
+  } finally {
+    setSavingId(null);
+  }
+};
 
   const selectedEvent =
     selectedEventId === "all"
@@ -439,6 +575,7 @@ export default function MeetingsPage() {
             ))}
           </select>
         </div>
+        
       </div>
 
       {notice && (
@@ -453,7 +590,41 @@ export default function MeetingsPage() {
           />
         </div>
       )}
+      {loading && (
+  <div className="alert alert-info d-flex align-items-center gap-2">
+    <span
+      className="spinner-border spinner-border-sm"
+      role="status"
+      aria-hidden="true"
+    />
+    <span>Loading meetings...</span>
+  </div>
+)}
+{error && (
+  <div className="alert alert-danger d-flex align-items-center mb-4">
+    <i className="ri-error-warning-line fs-5 me-2" />
+    <span>{error}</span>
+    <button
+      type="button"
+      className="btn-close ms-auto"
+      aria-label="Dismiss error"
+      onClick={() => setError("")}
+    />
+  </div>
+)}
 
+{error && (
+  <div className="alert alert-danger" role="alert">
+    <strong>Unable to load meetings:</strong> {error}
+    <button
+      type="button"
+      className="btn btn-sm btn-outline-danger ms-3"
+      onClick={() => loadPageData()}
+    >
+      Retry
+    </button>
+  </div>
+)}
       <div className="row g-4 mb-4">
         <StatCard
           title="Total meetings"
@@ -715,7 +886,7 @@ export default function MeetingsPage() {
           </span>
         </div>
 
-        {filteredMeetings.length === 0 ? (
+      {!loading && filteredMeetings.length === 0 ?  (
           <div className="card-body text-center py-5">
             <div
               className="d-flex align-items-center justify-content-center rounded-circle mx-auto mb-3"
@@ -843,7 +1014,8 @@ export default function MeetingsPage() {
 
         <div className="card-footer d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2">
           <small className="text-muted">
-            Displaying demo meeting data. API integration will be added later.
+          Meeting data is loaded from the server.
+
           </small>
           <small className="text-muted">
             {filteredMeetings.length} results
@@ -966,24 +1138,19 @@ export default function MeetingsPage() {
                   <label htmlFor="meetingStatus" className="form-label">
                     Update meeting status
                   </label>
-                  <select
-                    id="meetingStatus"
-                    className="form-select"
-                    value={selectedMeeting.status || "Scheduled"}
-                    onChange={(event) =>
-                      updateMeetingStatus(
-                        selectedMeeting.id,
-                        event.target.value
-                      )
-                    }
-                  >
-                    <option value="Scheduled">Scheduled</option>
-                    <option value="Completed">Completed</option>
-                    <option value="Canceled">Canceled</option>
-                  </select>
-                  <small className="text-muted">
-                    Demo only. Status changes are not saved to a database.
-                  </small>
+ <select
+  id="meetingStatus"
+  className="form-select"
+  value={selectedMeeting.status || "Scheduled"}
+  disabled={savingId === selectedMeeting.id}
+  onChange={(event) =>
+    updateMeetingStatus(selectedMeeting.id, event.target.value)
+  }
+>
+  <option value="Scheduled">Scheduled</option>
+  <option value="Canceled">Canceled</option>
+</select>
+                  
                 </div>
               </div>
 

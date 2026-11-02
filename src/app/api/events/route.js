@@ -1,26 +1,35 @@
 // src/app/api/events/route.js
 
-import { NextResponse } from 'next/server';
-import { randomUUID } from 'crypto';
-import { z } from 'zod';
-import pool from '../../../lib/db';
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import pool from "../../../lib/db";
+import { requireAdmin } from "@/lib/requireAdmin";
 
-export const dynamic = 'force-dynamic';
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-// Validate event data
+// =========================================
+// Validation
+// =========================================
+
 const createEventSchema = z.object({
-  title: z.string().trim().min(1, 'Title is required'),
+  title: z.string().trim().min(1, "Title is required"),
 
-  date: z.string().min(1, 'Date is required'),
+  date: z.string().min(1, "Date is required"),
 
-  location: z.string().trim().min(1, 'Location is required'),
+  location: z.string().trim().min(1, "Location is required"),
 
-  description: z.string().optional().default(''),
+  description: z.string().optional().default(""),
 
-  status: z.enum(['draft', 'published', 'archived']).default('draft'),
+  status: z
+    .enum(["draft", "published", "archived"])
+    .default("draft"),
 });
 
-// Validate YYYY-MM-DD dates
+// =========================================
+// Date helpers
+// =========================================
+
 function isValidDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return false;
@@ -34,56 +43,79 @@ function isValidDate(value) {
   );
 }
 
-// Normalize MySQL records for the frontend
-function normalizeEvent(row) {
-  let recordData = {};
+function normalizeDate(value) {
+  if (!value) return "";
 
-  if (row.record_data) {
-    try {
-      recordData =
-        typeof row.record_data === 'string'
-          ? JSON.parse(row.record_data)
-          : row.record_data;
-    } catch {
-      recordData = {};
-    }
+  if (value instanceof Date) {
+    return value.toISOString().slice(0, 10);
   }
 
+  return String(value).slice(0, 10);
+}
+
+function normalizeTimestamp(value) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toISOString();
+}
+
+// =========================================
+// Normalize MySQL event records
+// =========================================
+
+function normalizeEvent(row) {
   return {
-    ...recordData,
-    id: row.firebase_key,
-    title: row.title ?? recordData.title ?? '',
-    description: row.description ?? recordData.description ?? '',
-    date: row.date
-      ? String(row.date).slice(0, 10)
-      : recordData.date ?? '',
-    location: row.location ?? recordData.location ?? '',
-    status: String(
-      row.status ?? recordData.status ?? 'draft'
-    ).toLowerCase(),
-    createdAt: row.createdAt ?? recordData.createdAt ?? null,
-    updatedAt: row.updatedAt ?? recordData.updatedAt ?? null,
+    id: String(row.id),
+    title: row.title || "",
+    description: row.description || "",
+    date: normalizeDate(row.event_date),
+    location: row.location || "",
+    status: String(row.status || "draft").toLowerCase(),
+    createdAt: normalizeTimestamp(row.created_at),
+    updatedAt: normalizeTimestamp(row.updated_at),
   };
 }
 
-/* =========================================
-   GET /api/events
-
-   Query parameters:
-   page, pageSize, day, from, to, q, status
-========================================= */
+// =========================================
+// GET /api/events
+//
+// Query parameters:
+// page, pageSize, day, from, to, q, status
+// =========================================
 
 export async function GET(req) {
+  // 1. Verify admin authentication before accessing MySQL.
+  const auth = await requireAdmin();
+
+  if (!auth.authorized) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: auth.message || "Authentication required.",
+      },
+      { status: auth.status || 401 }
+    );
+  }
+
   try {
     const url = new URL(req.url);
 
+    // Pagination
     const pageValue = Number.parseInt(
-      url.searchParams.get('page') || '1',
+      url.searchParams.get("page") || "1",
       10
     );
 
     const pageSizeValue = Number.parseInt(
-      url.searchParams.get('pageSize') || '12',
+      url.searchParams.get("pageSize") || "12",
       10
     );
 
@@ -97,39 +129,48 @@ export async function GET(req) {
 
     const offset = (page - 1) * pageSize;
 
-    const day = url.searchParams.get('day');
-    const from = url.searchParams.get('from');
-    const to = url.searchParams.get('to');
+    // Filters
+    const day = url.searchParams.get("day");
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
 
     const status = (
-      url.searchParams.get('status') || ''
-    ).trim().toLowerCase();
+      url.searchParams.get("status") || ""
+    )
+      .trim()
+      .toLowerCase();
 
     const q = (
-      url.searchParams.get('q') || ''
+      url.searchParams.get("q") || ""
     ).trim();
 
     const conditions = [];
     const params = [];
 
-    // Filter by status
-    if (status && status !== 'all') {
-      if (!['draft', 'published', 'archived'].includes(status)) {
+    // Status filter
+    if (status && status !== "all") {
+      if (!["draft", "published", "archived"].includes(status)) {
         return NextResponse.json(
-          { error: 'Invalid event status' },
+          {
+            success: false,
+            error: "Invalid event status",
+          },
           { status: 400 }
         );
       }
 
-      conditions.push('LOWER(status) = ?');
+      conditions.push("LOWER(status) = ?");
       params.push(status);
     }
 
-    // Filter by exact day: YYYYMMDD
+    // Exact day filter: YYYYMMDD
     if (day) {
       if (!/^\d{8}$/.test(day)) {
         return NextResponse.json(
-          { error: 'Invalid day format. Use YYYYMMDD.' },
+          {
+            success: false,
+            error: "Invalid day format. Use YYYYMMDD.",
+          },
           { status: 400 }
         );
       }
@@ -139,71 +180,92 @@ export async function GET(req) {
 
       if (!isValidDate(dayDate)) {
         return NextResponse.json(
-          { error: 'Invalid calendar date' },
+          {
+            success: false,
+            error: "Invalid calendar date",
+          },
           { status: 400 }
         );
       }
 
-      conditions.push('DATE(date) = ?');
+      conditions.push("event_date = ?");
       params.push(dayDate);
     }
 
-    // Filter by starting date
+    // Start date filter
     if (from) {
       if (!isValidDate(from)) {
         return NextResponse.json(
-          { error: 'Invalid from date. Use YYYY-MM-DD.' },
+          {
+            success: false,
+            error: "Invalid from date. Use YYYY-MM-DD.",
+          },
           { status: 400 }
         );
       }
 
-      conditions.push('DATE(date) >= ?');
+      conditions.push("event_date >= ?");
       params.push(from);
     }
 
-    // Filter by ending date
+    // End date filter
     if (to) {
       if (!isValidDate(to)) {
         return NextResponse.json(
-          { error: 'Invalid to date. Use YYYY-MM-DD.' },
+          {
+            success: false,
+            error: "Invalid to date. Use YYYY-MM-DD.",
+          },
           { status: 400 }
         );
       }
 
-      conditions.push('DATE(date) <= ?');
+      conditions.push("event_date <= ?");
       params.push(to);
     }
 
-    // Search title and location
+    // Search by title or location
     if (q) {
       conditions.push(
-        '(LOWER(title) LIKE LOWER(?) OR LOWER(location) LIKE LOWER(?))'
+        "(LOWER(title) LIKE LOWER(?) OR LOWER(location) LIKE LOWER(?))"
       );
 
       params.push(`%${q}%`, `%${q}%`);
     }
 
     const whereClause = conditions.length
-      ? `WHERE ${conditions.join(' AND ')}`
-      : '';
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
 
-    // Count matching records before pagination
+    // Count matching events
     const [countRows] = await pool.execute(
-      `SELECT COUNT(*) AS total
-       FROM events
-       ${whereClause}`,
+      `
+        SELECT COUNT(*) AS total
+        FROM events
+        ${whereClause}
+      `,
       params
     );
 
-    const total = Number(countRows[0].total);
+    const total = Number(countRows[0]?.total || 0);
 
     // Fetch the requested page
     const [rows] = await pool.execute(
-      `SELECT *
-       FROM events
-       ${whereClause}
-       ORDER BY DATE(date) DESC, createdAt DESC
-       LIMIT ? OFFSET ?`,
+      `
+        SELECT
+          id,
+          title,
+          description,
+          event_date,
+          location,
+          status,
+          created_at,
+          updated_at
+        FROM events
+        ${whereClause}
+        ORDER BY event_date DESC, created_at DESC
+        LIMIT ? OFFSET ?
+      `,
       [...params, pageSize, offset]
     );
 
@@ -218,110 +280,147 @@ export async function GET(req) {
       records,
     });
   } catch (error) {
-    console.error('GET /api/events error:', error);
+    console.error("GET /api/events error:", error);
 
     return NextResponse.json(
-      { error: 'Failed to fetch events' },
+      {
+        success: false,
+        error: "Failed to fetch events",
+      },
       { status: 500 }
     );
   }
 }
 
-/* =========================================
-   POST /api/events
-   Create an event in MySQL
-========================================= */
+// =========================================
+// POST /api/events
+//
+// Create an event in MySQL
+// =========================================
 
 export async function POST(req) {
+  // 1. Verify admin authentication before creating an event.
+  const auth = await requireAdmin();
+
+  if (!auth.authorized) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: auth.message || "Authentication required.",
+      },
+      { status: auth.status || 401 }
+    );
+  }
+
   try {
     const body = await req.json();
 
-    // Validate input
+    // Validate request
     const parsed = createEventSchema.parse(body);
 
     if (!isValidDate(parsed.date)) {
       return NextResponse.json(
-        { error: 'Invalid date. Use YYYY-MM-DD.' },
+        {
+          success: false,
+          error: "Invalid date. Use YYYY-MM-DD.",
+        },
         { status: 400 }
       );
     }
 
-    // Generate an event ID
-    const id = `evt-${randomUUID()}`;
-    const now = new Date().toISOString();
+    // Generate a 32-character ID using MySQL.
+    const [idRows] = await pool.query(
+      "SELECT REPLACE(UUID(), '-', '') AS id"
+    );
 
-    // Event data returned to the frontend
-    const event = {
-      title: parsed.title,
-      description: parsed.description,
-      date: parsed.date,
-      location: parsed.location,
-      status: parsed.status,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const id = idRows[0].id;
 
-    // Store the complete event as JSON
-    const recordData = JSON.stringify({
-      id,
-      ...event,
-    });
+    // MySQL DATETIME-compatible values
+    const now = new Date();
 
-    // Every column with a JSON_VALID constraint must receive valid JSON.
+    // Insert only actual schema columns.
     await pool.execute(
-      `INSERT INTO events (
-        firebase_key,
-        record_data,
-        title,
-        description,
-        date,
-        location,
-        status,
-        createdAt,
-        updatedAt
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `
+        INSERT INTO events (
+          id,
+          title,
+          description,
+          event_date,
+          location,
+          status,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
       [
         id,
-        recordData,
-        JSON.stringify(parsed.title),
-        JSON.stringify(parsed.description),
-        JSON.stringify(parsed.date),
-        JSON.stringify(parsed.location),
-        JSON.stringify(parsed.status),
-        JSON.stringify(now),
-        JSON.stringify(now),
+        parsed.title,
+        parsed.description,
+        parsed.date,
+        parsed.location,
+        parsed.status,
+        now,
+        now,
       ]
     );
+
+    // Return the created record
+    const [rows] = await pool.execute(
+      `
+        SELECT
+          id,
+          title,
+          description,
+          event_date,
+          location,
+          status,
+          created_at,
+          updated_at
+        FROM events
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [id]
+    );
+
+    if (!rows.length) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Event was created but could not be retrieved",
+        },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json(
       {
         success: true,
-        message: 'Event created successfully',
-        data: {
-          id,
-          ...event,
-        },
+        message: "Event created successfully",
+        data: normalizeEvent(rows[0]),
       },
       { status: 201 }
     );
   } catch (error) {
+    // Zod validation errors
     if (error instanceof z.ZodError) {
       return NextResponse.json(
         {
-          error: 'Validation failed',
+          success: false,
+          error: "Validation failed",
           details: error.issues,
         },
         { status: 400 }
       );
     }
 
-    console.error('POST /api/events error:', error);
+    console.error("POST /api/events error:", error);
 
     return NextResponse.json(
       {
-        error: 'Failed to create event',
-        details: error.message,
+        success: false,
+        error: "Failed to create event",
       },
       { status: 500 }
     );

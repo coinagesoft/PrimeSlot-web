@@ -3,57 +3,20 @@ export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server';
 import pool from '../../../../lib/db';
-import { randomUUID } from 'crypto';
 
-// Decode JSON-formatted values stored in the event columns.
-function decodeJsonValue(value, fallback = '') {
-  if (value == null) return fallback;
-
-  if (typeof value !== 'string') return value;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-// Normalize a database row for the frontend.
 function normalizeEvent(row) {
-  let recordData = {};
-
-  if (row.record_data) {
-    try {
-      recordData =
-        typeof row.record_data === 'string'
-          ? JSON.parse(row.record_data)
-          : row.record_data;
-    } catch {
-      recordData = {};
-    }
-  }
-
   return {
-    ...recordData,
-    id: row.firebase_key,
-    title: decodeJsonValue(row.title, recordData.title ?? ''),
-    description: decodeJsonValue(
-      row.description,
-      recordData.description ?? ''
-    ),
-    date: decodeJsonValue(row.date, recordData.date ?? ''),
-    location: decodeJsonValue(row.location, recordData.location ?? ''),
-    status: String(
-      decodeJsonValue(row.status, recordData.status ?? 'draft')
-    ).toLowerCase(),
-    createdAt: decodeJsonValue(
-      row.createdAt,
-      recordData.createdAt ?? null
-    ),
-    updatedAt: decodeJsonValue(
-      row.updatedAt,
-      recordData.updatedAt ?? null
-    ),
+    id: row.id,
+    title: row.title ?? '',
+    description: row.description ?? '',
+    date:
+      row.event_date instanceof Date
+        ? row.event_date.toISOString().slice(0, 10)
+        : String(row.event_date ?? '').slice(0, 10),
+    location: row.location ?? '',
+    status: String(row.status ?? 'draft').toLowerCase(),
+    createdAt: row.created_at ?? null,
+    updatedAt: row.updated_at ?? null,
   };
 }
 
@@ -95,11 +58,24 @@ function isValidDate(value) {
   );
 }
 
+function isValidStatus(status) {
+  return ['draft', 'published', 'archived'].includes(status);
+}
+
 async function findEvent(id) {
   const [rows] = await pool.execute(
-    `SELECT *
+    `SELECT
+       id,
+       title,
+       description,
+       event_date,
+       location,
+       status,
+       created_by,
+       created_at,
+       updated_at
      FROM events
-     WHERE firebase_key = ?
+     WHERE id = ?
      LIMIT 1`,
     [id]
   );
@@ -118,7 +94,7 @@ export async function OPTIONS() {
 
 export async function GET(request, context) {
   try {
-   const id = await getEventId(context);
+    const id = await getEventId(context);
 
     if (!id) {
       return jsonResponse(
@@ -155,7 +131,6 @@ export async function GET(request, context) {
    Update an event
 ========================================= */
 
-
 export async function PUT(request, context) {
   try {
     const id = await getEventId(context);
@@ -167,20 +142,33 @@ export async function PUT(request, context) {
       );
     }
 
-    const body = await request.json();
+    let body;
+
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse(
+        { error: 'Invalid JSON request body' },
+        { status: 400 }
+      );
+    }
 
     const title =
       typeof body.title === 'string' ? body.title.trim() : '';
 
     const description =
-      typeof body.description === 'string' ? body.description : '';
+      typeof body.description === 'string'
+        ? body.description
+        : '';
 
     const date = body.date;
 
     const location =
-      typeof body.location === 'string' ? body.location.trim() : '';
+      typeof body.location === 'string'
+        ? body.location.trim()
+        : '';
 
-    const status = body.status ?? 'draft';
+    const status = String(body.status ?? 'draft').toLowerCase();
 
     if (!title || !location || !date) {
       return jsonResponse(
@@ -198,14 +186,13 @@ export async function PUT(request, context) {
       );
     }
 
-    if (!['draft', 'published', 'archived'].includes(status)) {
+    if (!isValidStatus(status)) {
       return jsonResponse(
         { error: 'Invalid event status' },
         { status: 400 }
       );
     }
 
-    // Preserve the original creation timestamp.
     const existingRow = await findEvent(id);
 
     if (!existingRow) {
@@ -215,50 +202,39 @@ export async function PUT(request, context) {
       );
     }
 
-    const existingEvent = normalizeEvent(existingRow);
-    const now = new Date().toISOString();
-
-    const event = {
-      ...existingEvent,
-      title,
-      description,
-      date,
-      location,
-      status,
-      updatedAt: now,
-    };
-
-    // Store the full event as JSON.
-    const recordData = JSON.stringify(event);
-
-    // JSON.stringify is required because the current table
-    // has JSON_VALID constraints on these individual columns.
     await pool.execute(
       `UPDATE events
-       SET record_data = ?,
-           title = ?,
+       SET title = ?,
            description = ?,
-           date = ?,
+           event_date = ?,
            location = ?,
-           status = ?,
-           updatedAt = ?
-       WHERE firebase_key = ?`,
+           status = ?
+       WHERE id = ?`,
       [
-        recordData,
-        JSON.stringify(title),
-        JSON.stringify(description),
-        JSON.stringify(date),
-        JSON.stringify(location),
-        JSON.stringify(status),
-        JSON.stringify(now),
+        title,
+        description,
+        date,
+        location,
+        status,
         id,
       ]
     );
 
+    // Fetch the updated row so MySQL supplies the actual
+    // updated_at timestamp.
+    const updatedRow = await findEvent(id);
+
+    if (!updatedRow) {
+      return jsonResponse(
+        { error: 'Event not found after update' },
+        { status: 404 }
+      );
+    }
+
     return jsonResponse({
       success: true,
       message: 'Event updated successfully',
-      data: event,
+      data: normalizeEvent(updatedRow),
     });
   } catch (error) {
     console.error('PUT /api/events/[id] error:', error);
@@ -287,8 +263,7 @@ export async function DELETE(request, context) {
     }
 
     const [result] = await pool.execute(
-      `DELETE FROM events
-       WHERE firebase_key = ?`,
+      `DELETE FROM events WHERE id = ?`,
       [id]
     );
 

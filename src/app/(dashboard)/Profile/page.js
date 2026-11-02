@@ -1,19 +1,35 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 
+const EMPTY_PROFILE = {
+  fullName: "",
+  email: "",
+  phone: "",
+  designation: "",
+  department: "",
+  timezone: "Asia/Kolkata",
+  bio: "",
+  businessName: "",
+  businessCategory: "",
+  chapterName: "",
+  region: "",
+  city: "",
+  memberStatus: "",
+  photoURL: "",
+  role: "",
+  isActive: false,
+  createdAt: null,
+  updatedAt: null,
+};
 export default function ProfilePage() {
   const [isEditing, setIsEditing] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [profile, setProfile] = useState({
-    fullName: "Admin User",
-    email: "admin@primeslot.com",
-    phone: "+91 98765 43210",
-    designation: "System Administrator",
-    department: "Administration",
-    timezone: "Asia/Kolkata",
-    bio: "Managing PrimeSlot platform operations and administration.",
-  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [passwordSuccess, setPasswordSuccess] = useState(false);
+  const [profile, setProfile] = useState(EMPTY_PROFILE);
+  const [originalProfile, setOriginalProfile] = useState(EMPTY_PROFILE);
 
   const [passwords, setPasswords] = useState({
     current: "",
@@ -23,52 +39,165 @@ export default function ProfilePage() {
 
   const [passwordMessage, setPasswordMessage] = useState("");
 
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchProfile() {
+      try {
+        const response = await fetch("/api/adminProfile", {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          throw new Error(
+            data.message || "Unable to fetch profile."
+          );
+        }
+
+        if (!cancelled) {
+          setProfile({
+            ...EMPTY_PROFILE,
+            ...data.profile,
+          });
+
+          setOriginalProfile({
+            ...EMPTY_PROFILE,
+            ...data.profile,
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          alert(error.message || "Unable to fetch profile.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    fetchProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const updateProfile = (field, value) => {
-    setProfile((prev) => ({ ...prev, [field]: value }));
+    setProfile((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+
     setSaved(false);
   };
 
-  const handleSave = () => {
-    setIsEditing(false);
-    setSaved(true);
+  const handleSave = async () => {
+    setSaving(true);
+    setSaved(false);
+
+    try {
+      const response = await fetch("/api/adminProfile", {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(profile),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to save profile.");
+      }
+
+      const updatedProfile = {
+        ...EMPTY_PROFILE,
+        ...data.profile,
+      };
+
+      setProfile(updatedProfile);
+      setOriginalProfile(updatedProfile);
+      setIsEditing(false);
+      setSaved(true);
+    } catch (error) {
+      alert(error.message || "Unable to save profile.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleCancel = () => {
+    setProfile({ ...originalProfile });
     setIsEditing(false);
     setSaved(false);
-    setProfile({
-      fullName: "Admin User",
-      email: "admin@primeslot.com",
-      phone: "+91 98765 43210",
-      designation: "System Administrator",
-      department: "Administration",
-      timezone: "Asia/Kolkata",
-      bio: "Managing PrimeSlot platform operations and administration.",
-    });
   };
 
-  const handlePasswordChange = (e) => {
+  const handlePasswordChange = async (e) => {
     e.preventDefault();
-    setPasswordMessage("");
+    setPasswordSuccess(true);
+    setPasswordMessage(
+      data.message || "Password updated successfully."
+    );
 
-    if (!passwords.current || !passwords.newPassword || !passwords.confirmPassword) {
+    if (
+      !passwords.current ||
+      !passwords.newPassword ||
+      !passwords.confirmPassword
+    ) {
       setPasswordMessage("Please fill in all password fields.");
       return;
     }
 
     if (passwords.newPassword.length < 8) {
-      setPasswordMessage("New password must contain at least 8 characters.");
+      setPasswordMessage(
+        "New password must contain at least 8 characters."
+      );
       return;
     }
 
     if (passwords.newPassword !== passwords.confirmPassword) {
-      setPasswordMessage("New password and confirmation do not match.");
+      setPasswordMessage(
+        "New password and confirmation do not match."
+      );
       return;
     }
 
-    setPasswordMessage(
-      "Demo mode: password changes will be available after API integration."
-    );
+    try {
+      const response = await fetch("/api/adminProfile/password", {
+        method: "PATCH",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(passwords),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Unable to update password.");
+      }
+
+      setPasswordMessage(
+        data.message || "Password updated successfully."
+      );
+      setPasswords({
+        current: "",
+        newPassword: "",
+        confirmPassword: "",
+      });
+    } catch (error) {
+      setPasswordMessage(
+        error.message || "Unable to update password."
+      );
+    }
   };
 
   const initials = profile.fullName
@@ -81,6 +210,19 @@ export default function ProfilePage() {
 
   const inputClass =
     "form-control" + (!isEditing ? " bg-lighter" : "");
+
+  if (loading) {
+    return (
+      <div className="container-fluid flex-grow-1 container-p-y">
+        <div className="d-flex flex-column align-items-center justify-content-center py-5">
+          <div className="spinner-border text-primary" role="status">
+            <span className="visually-hidden">Loading...</span>
+          </div>
+          <p className="text-muted mt-3">Loading your profile...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="container-fluid flex-grow-1 container-p-y">
@@ -306,15 +448,15 @@ export default function ProfilePage() {
 
       <div className="profile-page">
         <div className="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
-          
-           <div>
-          <h4 className="fw-bold mb-1 ">
-           My Profile
-          </h4>
-          <p className="text-muted mb-0">
+
+          <div>
+            <h4 className="fw-bold mb-1 ">
+              My Profile
+            </h4>
+            <p className="text-muted mb-0">
               Manage your personal information and account security.
-          </p>
-        </div>
+            </p>
+          </div>
 
           <div className="d-flex align-items-center gap-2">
             <i className="ri-home-4-line" />
@@ -340,9 +482,25 @@ export default function ProfilePage() {
                           <i className="ri-shield-user-line me-1" />
                           {profile.designation}
                         </span>
-                        <span className="status-badge">
-                          <i className="ri-checkbox-circle-fill" />
-                          Active
+                        <span
+                          className="status-badge"
+                          style={
+                            !profile.isActive
+                              ? {
+                                background: "#fce4e4",
+                                color: "#ea5455",
+                              }
+                              : {}
+                          }
+                        >
+                          <i
+                            className={
+                              profile.isActive
+                                ? "ri-checkbox-circle-fill"
+                                : "ri-close-circle-fill"
+                            }
+                          />
+                          {profile.isActive ? "Active" : "Inactive"}
                         </span>
                       </div>
                     </div>
@@ -374,9 +532,10 @@ export default function ProfilePage() {
                           type="button"
                           className="btn btn-primary"
                           onClick={handleSave}
+                          disabled={saving}
                         >
                           <i className="ri-save-line me-1" />
-                          Save Changes
+                          {saving ? "Saving..." : "Save Changes"}
                         </button>
                       </>
                     )}
@@ -389,7 +548,7 @@ export default function ProfilePage() {
                     role="status"
                   >
                     <i className="ri-checkbox-circle-line me-2" />
-                    Profile updated in this demo.
+                    Profile updated successfully.
                   </div>
                 )}
               </div>
@@ -527,7 +686,9 @@ export default function ProfilePage() {
                 <i className="ri-user-settings-line fs-4 text-primary" />
                 <div>
                   <div className="info-label">Account Role</div>
-                  <div className="info-value">Super Admin</div>
+                  <div className="info-value">
+                    {profile.role || "Admin"}
+                  </div>
                 </div>
               </div>
 
@@ -535,7 +696,9 @@ export default function ProfilePage() {
                 <i className="ri-checkbox-circle-line fs-4 text-success" />
                 <div>
                   <div className="info-label">Account Status</div>
-                  <div className="info-value">Active</div>
+                  <div className="info-value">
+                    {profile.isActive ? "Active" : "Inactive"}
+                  </div>
                 </div>
               </div>
 
@@ -543,7 +706,14 @@ export default function ProfilePage() {
                 <i className="ri-calendar-check-line fs-4 text-primary" />
                 <div>
                   <div className="info-label">Member Since</div>
-                  <div className="info-value">January 2026</div>
+                  <div className="info-value">
+                    {profile.createdAt
+                      ? new Date(profile.createdAt).toLocaleDateString("en-IN", {
+                        month: "long",
+                        year: "numeric",
+                      })
+                      : "—"}
+                  </div>
                 </div>
               </div>
 
@@ -628,11 +798,8 @@ export default function ProfilePage() {
 
                 {passwordMessage && (
                   <div
-                    className={`alert ${
-                      passwordMessage.startsWith("Demo mode")
-                        ? "alert-info"
-                        : "alert-danger"
-                    } py-2`}
+                    className={`alert ${passwordSuccess ? "alert-success" : "alert-danger"
+                      } py-2`}
                     role="status"
                   >
                     {passwordMessage}

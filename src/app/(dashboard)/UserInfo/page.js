@@ -1,70 +1,8 @@
 
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-const INITIAL_USERS = [
-  {
-    id: 1,
-    name: "Rahul Sharma",
-    email: "rahul.sharma@example.com",
-    phone: "+91 98765 43210",
-    role: "Admin",
-    status: "Active",
-    joined: "12 Oct 2026",
-    avatar: "RS",
-  },
-  {
-    id: 2,
-    name: "Priya Patil",
-    email: "priya.patil@example.com",
-    phone: "+91 87654 32109",
-    role: "Member",
-    status: "Active",
-    joined: "10 Oct 2026",
-    avatar: "PP",
-  },
-  {
-    id: 3,
-    name: "Amit Deshmukh",
-    email: "amit.deshmukh@example.com",
-    phone: "+91 99887 76655",
-    role: "Member",
-    status: "Inactive",
-    joined: "08 Oct 2026",
-    avatar: "AD",
-  },
-  {
-    id: 4,
-    name: "Sneha Kulkarni",
-    email: "sneha.kulkarni@example.com",
-    phone: "+91 90909 80808",
-    role: "Moderator",
-    status: "Active",
-    joined: "05 Oct 2026",
-    avatar: "SK",
-  },
-  {
-    id: 5,
-    name: "Karan Joshi",
-    email: "karan.joshi@example.com",
-    phone: "+91 88776 65544",
-    role: "Member",
-    status: "Pending",
-    joined: "02 Oct 2026",
-    avatar: "KJ",
-  },
-  {
-    id: 6,
-    name: "Neha More",
-    email: "neha.more@example.com",
-    phone: "+91 77665 54433",
-    role: "Member",
-    status: "Active",
-    joined: "28 Sep 2026",
-    avatar: "NM",
-  },
-];
 
 const ROLE_STYLES = {
   Admin: "bg-label-primary",
@@ -167,6 +105,7 @@ function UserModal({
   editingUser,
   onClose,
   onSave,
+  savingUser,
 }) {
   return (
     <div
@@ -320,9 +259,25 @@ function UserModal({
             >
               Cancel
             </button>
-            <button type="submit" className="btn btn-primary">
-              <i className="ri-save-line me-2" />
-              {editingUser ? "Save Changes" : "Add User"}
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={savingUser}
+            >
+              {savingUser ? (
+                <>
+                  <span
+                    className="spinner-border spinner-border-sm me-2"
+                    aria-hidden="true"
+                  />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <i className="ri-save-line me-2" />
+                  {editingUser ? "Save Changes" : "Add User"}
+                </>
+              )}
             </button>
           </div>
         </form>
@@ -466,7 +421,7 @@ function DeleteUserModal({ user, onClose, onConfirm }) {
 
 
 export default function UserInfoPage() {
-  const [users, setUsers] = useState(INITIAL_USERS);
+  const [users, setUsers] = useState([]);
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
@@ -475,7 +430,35 @@ export default function UserInfoPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [savingUser, setSavingUser] = useState(false);
   const [notice, setNotice] = useState("");
+  const [loadingUsers, setLoadingUsers] = useState(true);
+
+  const fetchUsers = async () => {
+    setLoadingUsers(true);
+
+    try {
+      const response = await fetch("/api/userInfo", {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Failed to load users.");
+      }
+
+      setUsers(Array.isArray(result.data) ? result.data : []);
+    } catch (error) {
+      console.error("Fetch users error:", error);
+      setNotice(error.message || "Failed to load users.");
+      throw error;
+    } finally {
+      setLoadingUsers(false);
+    }
+  };
   const [form, setForm] = useState({
     name: "",
     email: "",
@@ -540,11 +523,18 @@ export default function UserInfoPage() {
     setShowCreateModal(true);
   };
 
-  const handleSaveUser = (event) => {
+  useEffect(() => {
+    fetchUsers().catch(() => { });
+  }, []);
+
+  const handleSaveUser = async (event) => {
     event.preventDefault();
 
+    if (savingUser) return;
+
     const name = form.name.trim();
-    const email = form.email.trim();
+    const email = form.email.trim().toLowerCase();
+    const phone = form.phone.trim();
 
     if (!name || !email) {
       setNotice("Name and email are required.");
@@ -553,8 +543,8 @@ export default function UserInfoPage() {
 
     const duplicateEmail = users.some(
       (user) =>
-        user.email.toLowerCase() === email.toLowerCase() &&
-        user.id !== editingUser?.id
+        user.email?.toLowerCase() === email &&
+        String(user.id) !== String(editingUser?.id)
     );
 
     if (duplicateEmail) {
@@ -562,59 +552,91 @@ export default function UserInfoPage() {
       return;
     }
 
-    if (editingUser) {
-      setUsers((current) =>
-        current.map((user) =>
-          user.id === editingUser.id
-            ? {
-                ...user,
-                ...form,
-                name,
-                email,
-                phone: form.phone.trim(),
-                avatar: getInitials(name),
-              }
-            : user
-        )
+    setSavingUser(true);
+    setNotice("");
+
+    try {
+      const isEditing = Boolean(editingUser);
+
+      const response = await fetch(
+        isEditing
+          ? `/api/userInfo/${encodeURIComponent(editingUser.id)}`
+          : "/api/userInfo",
+        {
+          method: isEditing ? "PATCH" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          credentials: "same-origin",
+          body: JSON.stringify({
+            name,
+            email,
+            phone,
+            role: form.role,
+            status: form.status,
+          }),
+        }
       );
-      setNotice("User updated in demo data.");
-    } else {
-      const newUser = {
-        id: Math.max(0, ...users.map((user) => user.id)) + 1,
-        ...form,
-        name,
-        email,
-        phone: form.phone.trim(),
-        joined: new Date().toLocaleDateString("en-IN", {
-          day: "2-digit",
-          month: "short",
-          year: "numeric",
-        }),
-        avatar: getInitials(name),
-      };
 
-      setUsers((current) => [newUser, ...current]);
-      setNotice("User added to demo data.");
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(
+          result.message ||
+          `Failed to ${isEditing ? "update" : "create"} user.`
+        );
+      }
+
+      // Reload actual database records instead of updating demo state.
+      await fetchUsers();
+
+      setNotice(
+        result.message ||
+        (isEditing
+          ? "User updated successfully."
+          : "User added successfully.")
+      );
+
+      setShowCreateModal(false);
+      setEditingUser(null);
+      resetForm();
+    } catch (error) {
+      console.error("Save user error:", error);
+
+      setNotice(
+        error.message || "Something went wrong while saving the user."
+      );
+    } finally {
+      setSavingUser(false);
     }
-
-    setShowCreateModal(false);
-    setEditingUser(null);
-    resetForm();
   };
 
-  const handleDeleteUser = () => {
+  const handleDeleteUser = async () => {
     if (!showDeleteModal) return;
 
-    setUsers((current) =>
-      current.filter((user) => user.id !== showDeleteModal.id)
-    );
+    try {
+      const response = await fetch(
+        `/api/userInfo/${encodeURIComponent(showDeleteModal.id)}`,
+        { method: "DELETE" }
+      );
 
-    if (selectedUser?.id === showDeleteModal.id) {
-      setSelectedUser(null);
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Failed to delete member.");
+      }
+
+      await fetchUsers();
+
+      if (selectedUser?.id === showDeleteModal.id) {
+        setSelectedUser(null);
+      }
+
+      setNotice(result.message);
+      setShowDeleteModal(null);
+    } catch (error) {
+      setNotice(error.message || "Failed to delete member.");
     }
-
-    setNotice("User removed from demo data.");
-    setShowDeleteModal(null);
   };
 
   const currentAdmin = users.find((user) => user.role === "Admin") || users[0];
@@ -986,18 +1008,18 @@ export default function UserInfoPage() {
 
       <main className="container-xxl flex-grow-1 container-p-y user-info-page">
         <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
-         
-           <div>
-          <h4 className="fw-bold mb-1 ">
-            Members Info
-          </h4>
-          <p className="text-muted mb-0">
-             Manage user profiles, roles, and account status.
-          </p>
-        </div>
+
+          <div>
+            <h4 className="fw-bold mb-1 ">
+              Members Info
+            </h4>
+            <p className="text-muted mb-0">
+              Manage user profiles, roles, and account status.
+            </p>
+          </div>
 
           <div className="d-flex flex-wrap gap-2">
-          
+
             <button
               type="button"
               className="btn btn-primary"
@@ -1025,7 +1047,7 @@ export default function UserInfoPage() {
           </div>
         )}
 
-        
+
 
         <div className="row g-3 g-xl-4 mb-4">
           <StatCard
@@ -1276,12 +1298,11 @@ export default function UserInfoPage() {
           form={form}
           setForm={setForm}
           editingUser={editingUser}
-          onClose={() => {
-            setShowCreateModal(false);
-            setEditingUser(null);
-          }}
+          onClose={() => setShowCreateModal(false)}
           onSave={handleSaveUser}
+          savingUser={savingUser}
         />
+
       )}
 
       {selectedUser && (

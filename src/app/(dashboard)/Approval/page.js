@@ -1,51 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 const PRIMARY = "#696cff";
-const INITIAL_REQUESTS = [
-  {
-    id: "PA-1024",
-    name: "Priya Patil",
-    email: "priya.patil@example.com",
-    phone: "+91 87654 32109",
-    submittedAt: "21 Oct 2026",
-    status: "Pending",
-    changes: { "Full name": "Priya Patil", "Phone number": "+91 87654 32109", "City": "Pune", "Profession": "Product Designer" },
-    previous: { "Full name": "Priya P.", "Phone number": "Not provided", "City": "Mumbai", "Profession": "Not provided" },
-  },
-  {
-    id: "PA-1023",
-    name: "Amit Deshmukh",
-    email: "amit.deshmukh@example.com",
-    phone: "+91 99887 76655",
-    submittedAt: "20 Oct 2026",
-    status: "Pending",
-    changes: { "Full name": "Amit Deshmukh", "Phone number": "+91 99887 76655", "City": "Pimpri-Chinchwad", "Profession": "Software Engineer" },
-    previous: { "Full name": "Amit D.", "Phone number": "Not provided", "City": "Pune", "Profession": "Not provided" },
-  },
-  {
-    id: "PA-1022",
-    name: "Sneha Kulkarni",
-    email: "sneha.kulkarni@example.com",
-    phone: "+91 90909 80808",
-    submittedAt: "19 Oct 2026",
-    status: "Approved",
-    changes: { "Full name": "Sneha Kulkarni", "Phone number": "+91 90909 80808", "City": "Nashik", "Profession": "Teacher" },
-    previous: { "Full name": "Sneha K.", "Phone number": "Not provided", "City": "Pune", "Profession": "Not provided" },
-  },
-  {
-    id: "PA-1021",
-    name: "Karan Joshi",
-    email: "karan.joshi@example.com",
-    phone: "+91 88776 65544",
-    submittedAt: "18 Oct 2026",
-    status: "Rejected",
-    reason: "Please provide a valid phone number.",
-    changes: { "Full name": "Karan Joshi", "Phone number": "12345", "City": "Mumbai", "Profession": "Accountant" },
-    previous: { "Full name": "Karan J.", "Phone number": "Not provided", "City": "Pune", "Profession": "Not provided" },
-  },
-];
+
 
 const STATUS_CLASS = {
   Pending: "pa-status-pending",
@@ -77,7 +35,7 @@ function StatCard({ title, value, icon, tone }) {
   );
 }
 
-function RequestModal({ request, onClose, onApprove, onReject }) {
+function RequestModal({ request, onClose, onApprove, onReject, actionLoading, }) {
   const [reason, setReason] = useState("");
   const [showReject, setShowReject] = useState(false);
   if (!request) return null;
@@ -122,53 +80,291 @@ function RequestModal({ request, onClose, onApprove, onReject }) {
           <button type="button" className="btn btn-outline-secondary" onClick={onClose}>Close</button>
           {request.status === "Pending" && !showReject && <>
             <button type="button" className="btn btn-outline-danger" onClick={() => setShowReject(true)}><i className="ri-close-circle-line me-1" />Reject</button>
-            <button type="button" className="btn btn-primary" onClick={() => onApprove(request.id)}><i className="ri-check-line me-1" />Approve</button>
-          </>}
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={actionLoading}
+              onClick={() => onApprove(request.id)}
+            >
+              {actionLoading ? (
+                <>
+                  <span className="spinner-border spinner-border-sm me-1" />
+                  Processing...
+                </>
+              ) : (
+                <>
+                  <i className="ri-check-line me-1" />
+                  Approve
+                </>
+              )}
+            </button>          </>}
           {request.status === "Pending" && showReject && <>
             <button type="button" className="btn btn-outline-secondary" onClick={() => { setShowReject(false); setReason(""); }}>Cancel</button>
-            <button type="button" className="btn btn-danger" disabled={!reason.trim()} onClick={() => onReject(request.id, reason.trim())}><i className="ri-close-circle-line me-1" />Confirm Rejection</button>
-          </>}
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={!reason.trim() || actionLoading}
+              onClick={() => onReject(request.id, reason.trim())}
+            >
+              {actionLoading ? (
+                <>
+                  <span className="spinner-border spinner-border-sm me-1" />
+                  Processing...
+                </>
+              ) : (
+                <>
+                  <i className="ri-close-circle-line me-1" />
+                  Confirm Rejection
+                </>
+              )}
+            </button>          </>}
         </footer>
       </section>
     </div>
   );
 }
 
+function parseRequestText(value) {
+  if (!value) return {};
+
+  if (typeof value === "object") {
+    return value;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+
+    // Support JSON objects and JSON strings.
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function normalizeRequest(row) {
+  const submittedDetails = parseRequestText(
+    row.request_text ?? row.requestText
+  );
+
+  const status = String(row.status || "pending").toLowerCase();
+
+  return {
+    id: row.id ?? row.request_id ?? row.requestId,
+    memberId: row.member_id ?? row.memberId,
+    name: row.full_name ?? row.name ?? "Unknown member",
+    email: row.email ?? "",
+    phone: row.phone ?? "",
+    submittedAt: formatDate(row.created_at ?? row.createdAt),
+
+    status:
+      status === "approved"
+        ? "Approved"
+        : status === "rejected"
+          ? "Rejected"
+          : "Pending",
+
+    // These fields are used by the existing review modal.
+    changes: submittedDetails.changes ?? submittedDetails,
+
+    previous: row.previous ?? {},
+
+    reason: row.admin_comment ?? row.adminComment ?? "",
+  };
+}
+
 export default function ProfileApprovalsPage() {
-  const [requests, setRequests] = useState(INITIAL_REQUESTS);
+  const [requests, setRequests] = useState([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [selectedRequest, setSelectedRequest] = useState(null);
+
+  const [stats, setStats] = useState({
+    total: 0,
+    pending: 0,
+    approved: 0,
+    rejected: 0,
+  });
+
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const stats = useMemo(() => ({
-    total: requests.length,
-    pending: requests.filter((request) => request.status === "Pending").length,
-    approved: requests.filter((request) => request.status === "Approved").length,
-    rejected: requests.filter((request) => request.status === "Rejected").length,
-  }), [requests]);
+  // Load requests from MySQL through the API.
+  const fetchRequests = useCallback(async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const params = new URLSearchParams();
+
+      if (search.trim()) {
+        params.set("q", search.trim());
+      }
+
+      if (statusFilter !== "All") {
+        params.set("status", statusFilter.toLowerCase());
+      }
+
+      const response = await fetch(
+        `/api/profile-approvals?${params.toString()}`,
+        {
+          method: "GET",
+          cache: "no-store",
+          credentials: "same-origin",
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok || result.success === false) {
+        throw new Error(
+          result.message || "Failed to load profile approval requests."
+        );
+      }
+
+      const rows = Array.isArray(result.data) ? result.data : [];
+
+      setRequests(rows.map(normalizeRequest));
+
+      // Prefer database counts returned by the API.
+      if (result.stats) {
+        setStats({
+          total: Number(result.stats.total ?? 0),
+          pending: Number(result.stats.pending ?? 0),
+          approved: Number(result.stats.approved ?? 0),
+          rejected: Number(result.stats.rejected ?? 0),
+        });
+      } else {
+        // Fallback if the API doesn't return dashboard statistics.
+        setStats({
+          total: rows.length,
+          pending: rows.filter(
+            (item) => item.status?.toLowerCase() === "pending"
+          ).length,
+          approved: rows.filter(
+            (item) => item.status?.toLowerCase() === "approved"
+          ).length,
+          rejected: rows.filter(
+            (item) => item.status?.toLowerCase() === "rejected"
+          ).length,
+        });
+      }
+    } catch (err) {
+      setError(err.message || "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }, [search, statusFilter]);
+
+  // Fetch initially and whenever the search or status filter changes.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchRequests();
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [fetchRequests]);
+
+  // Approve request through the API.
+  const approveRequest = async (id) => {
+    if (actionLoading) return;
+
+    setActionLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await fetch(
+        `/api/profile-approvals/${encodeURIComponent(id)}/approve`,
+        {
+          method: "PATCH",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok || result.success === false) {
+        throw new Error(result.message || "Failed to approve request.");
+      }
+
+      setSelectedRequest(null);
+      setNotice("Profile update request approved successfully.");
+
+      // Reload database records and statistics.
+      await fetchRequests();
+    } catch (err) {
+      setError(err.message || "Failed to approve request.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Reject request through the API.
+  const rejectRequest = async (id, reason) => {
+    if (!reason?.trim() || actionLoading) return;
+
+    setActionLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await fetch(
+        `/api/profile-approvals/${encodeURIComponent(id)}/reject`,
+        {
+          method: "PATCH",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            reason: reason.trim(),
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok || result.success === false) {
+        throw new Error(result.message || "Failed to reject request.");
+      }
+
+      setSelectedRequest(null);
+      setNotice("Profile update request rejected successfully.");
+
+      // Reload database records and statistics.
+      await fetchRequests();
+    } catch (err) {
+      setError(err.message || "Failed to reject request.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   const filteredRequests = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return requests.filter((request) => {
-      const matchesSearch = !query || [request.id, request.name, request.email, request.phone].some((value) => String(value || "").toLowerCase().includes(query));
-      return matchesSearch && (statusFilter === "All" || request.status === statusFilter);
-    });
-  }, [requests, search, statusFilter]);
-
-  const approveRequest = (id) => {
-    const request = requests.find((item) => item.id === id);
-    setRequests((current) => current.map((item) => item.id === id ? { ...item, status: "Approved", reason: "" } : item));
-    setSelectedRequest(null);
-    setNotice(`${request?.name || "Profile request"} approved in demo data.`);
-  };
-
-  const rejectRequest = (id, reason) => {
-    const request = requests.find((item) => item.id === id);
-    setRequests((current) => current.map((item) => item.id === id ? { ...item, status: "Rejected", reason } : item));
-    setSelectedRequest(null);
-    setNotice(`${request?.name || "Profile request"} rejected in demo data.`);
-  };
+    // Search and status filtering are already handled by the API.
+    return requests;
+  }, [requests]);
 
   return (
     <>
@@ -224,7 +420,17 @@ export default function ProfileApprovalsPage() {
           </div>
           <span className="badge bg-label-primary px-3 py-2">{stats.pending} pending review</span>
         </div>
-
+        {error && (
+          <div className="alert alert-danger" role="alert">
+            {error}
+            <button
+              type="button"
+              className="btn-close float-end"
+              aria-label="Close"
+              onClick={() => setError("")}
+            />
+          </div>
+        )}
         {notice && <div className="alert alert-primary alert-dismissible d-flex align-items-start gap-2 mb-4" role="status">
           <i className="ri-information-line fs-5" aria-hidden="true" /><div className="flex-grow-1">{notice}</div>
           <button type="button" className="btn-close" onClick={() => setNotice("")} aria-label="Close notification" />
@@ -276,7 +482,14 @@ export default function ProfileApprovalsPage() {
         </div>
       </main>
 
-      <RequestModal request={selectedRequest} onClose={() => setSelectedRequest(null)} onApprove={approveRequest} onReject={rejectRequest} />
-    </>
+      <RequestModal
+        request={selectedRequest}
+        onClose={() => {
+          if (!actionLoading) setSelectedRequest(null);
+        }}
+        onApprove={approveRequest}
+        onReject={rejectRequest}
+        actionLoading={actionLoading}
+      />    </>
   );
 }

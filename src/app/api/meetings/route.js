@@ -1,424 +1,146 @@
 // src/app/api/meetings/route.js
 
+import { NextResponse } from "next/server";
+import pool from "@/lib/db";
+import { requireAdmin } from "@/lib/requireAdmin";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import pool from "../../../lib/db";
-import jwt from "jsonwebtoken";
-
-// ======================================================
-// CONFIGURATION
-// ======================================================
-
-const ADMIN_COOKIE = "admin_session";
-const JWT_COOKIE = "session";
-
-const JWT_SECRET = process.env.JWT_SECRET;
-const DISABLE_AUTH = process.env.DISABLE_AUTH === "true";
-
-// ======================================================
-// CORS
-// ======================================================
-
-function addCORS(response) {
-  response.headers.set("Access-Control-Allow-Origin", "*");
-  response.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
-  response.headers.set(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
-  );
-
-  return response;
+function response(data, status = 200) {
+  return NextResponse.json(data, { status });
 }
 
-function jsonResponse(data, status = 200) {
-  return addCORS(NextResponse.json(data, { status }));
-}
-
-export async function OPTIONS() {
-  return jsonResponse({}, 200);
-}
-
-// ======================================================
-// JSON VALUE DECODER
-// ======================================================
-
-/**
- * Decode JSON-encoded values stored in MySQL.
- *
- * Examples:
- *   '"approved"' -> 'approved'
- *   '"member123"' -> 'member123'
- *   'true' -> true
- *   '123' -> 123
- *   '{"name":"Test"}' -> { name: "Test" }
- *
- * Ordinary strings remain unchanged.
- */
-function decodeJsonValue(value) {
-  if (value === null || value === undefined) {
-    return value;
-  }
-
-  if (typeof value !== "string") {
-    return value;
-  }
-
+export async function GET() {
   try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
+    // Authenticate the administrator.
+    const auth = await requireAdmin();
 
-// ======================================================
-// MEMBER AUTHENTICATION
-// ======================================================
-
-/**
- * Authenticate using:
- *
- * 1. DISABLE_AUTH test mode, if enabled.
- * 2. Bearer JWT.
- * 3. JWT session cookie.
- *
- * This endpoint only allows authenticated members.
- */
-async function requireUser(request) {
-  if (DISABLE_AUTH) {
-    return {
-      mode: "test",
-      uid: "TEST_MEMBER_001",
-    };
-  }
-
-  if (!JWT_SECRET) {
-    throw Object.assign(
-      new Error("JWT_SECRET is not configured."),
-      { status: 500 }
-    );
-  }
-
-  // ----------------------------------------------------
-  // 1. Bearer JWT
-  // ----------------------------------------------------
-
-  const authorization = request.headers.get("authorization") || "";
-
-  if (authorization.startsWith("Bearer ")) {
-    const token = authorization.slice(7).trim();
-
-    try {
-      const payload = jwt.verify(token, JWT_SECRET);
-
-      if (
-        payload &&
-        typeof payload.sub === "string" &&
-        payload.sub.trim()
-      ) {
-        return {
-          mode: "member",
-          uid: payload.sub,
-          payload,
-        };
-      }
-    } catch {
-      // Continue to cookie authentication.
-    }
-  }
-
-  // ----------------------------------------------------
-  // 2. JWT session cookie
-  // ----------------------------------------------------
-
-  const cookieStore = await cookies();
-  const sessionToken = cookieStore.get(JWT_COOKIE)?.value;
-
-  if (sessionToken) {
-    try {
-      const payload = jwt.verify(sessionToken, JWT_SECRET);
-
-      if (
-        payload &&
-        typeof payload.sub === "string" &&
-        payload.sub.trim()
-      ) {
-        return {
-          mode: "member",
-          uid: payload.sub,
-          payload,
-        };
-      }
-    } catch {
-      // Continue to the admin-cookie check.
-    }
-  }
-
-  // ----------------------------------------------------
-  // 3. Admin cookie
-  // ----------------------------------------------------
-
-  const adminSession = cookieStore.get(ADMIN_COOKIE)?.value;
-
-  if (adminSession) {
-    throw Object.assign(
-      new Error("Admin sessions cannot access this member endpoint."),
-      { status: 403 }
-    );
-  }
-
-  throw Object.assign(
-    new Error("Unauthorized"),
-    { status: 401 }
-  );
-}
-
-// ======================================================
-// MEETING NORMALIZATION
-// ======================================================
-
-/**
- * Convert a MySQL meeting row into the API response format.
- *
- * record_data may contain additional meeting properties.
- * Explicit database columns take precedence over record_data.
- */
-function normalizeMeeting(row) {
-  let record = {};
-
-  if (row.record_data) {
-    const decodedRecord = decodeJsonValue(row.record_data);
-
-    if (
-      decodedRecord &&
-      typeof decodedRecord === "object" &&
-      !Array.isArray(decodedRecord)
-    ) {
-      record = decodedRecord;
-    }
-  }
-
-  return {
-    ...record,
-
-    meetingId: row.firebase_key,
-
-    aId: decodeJsonValue(row.aId),
-    bId: decodeJsonValue(row.bId),
-
-    mode: decodeJsonValue(row.mode),
-    notes: decodeJsonValue(row.notes),
-    place: decodeJsonValue(row.place),
-
-    status: decodeJsonValue(row.status),
-    eventId: decodeJsonValue(row.eventId),
-    outcome: decodeJsonValue(row.outcome),
-
-    createdAt: decodeJsonValue(row.createdAt),
-    createdBy: decodeJsonValue(row.createdBy),
-    updatedAt: decodeJsonValue(row.updatedAt),
-
-    durationMin: decodeJsonValue(row.durationMin),
-    scheduledAt: decodeJsonValue(row.scheduledAt),
-
-    businessGivenByA: decodeJsonValue(row.businessGivenByA),
-    businessGivenByB: decodeJsonValue(row.businessGivenByB),
-
-    referralsGivenByA: decodeJsonValue(row.referralsGivenByA),
-    referralsGivenByB: decodeJsonValue(row.referralsGivenByB),
-
-    topic: decodeJsonValue(row.topic),
-  };
-}
-
-// ======================================================
-// APPROVAL CHECK
-// ======================================================
-
-/**
- * Preserve the approval checks from the existing API.
- *
- * A meeting is approved when one of these conditions holds:
- *
- * - approved === true
- * - isApproved === true
- * - status === "approved"
- * - approval === "approved"
- * - approvedAt exists
- */
-function isMeetingApproved(meeting) {
-  if (!meeting || typeof meeting !== "object") {
-    return false;
-  }
-
-  const approved = decodeJsonValue(meeting.approved);
-  const isApproved = decodeJsonValue(meeting.isApproved);
-
-  const status = decodeJsonValue(meeting.status);
-  const approval = decodeJsonValue(meeting.approval);
-
-  const approvedAt = decodeJsonValue(meeting.approvedAt);
-
-  if (approved === true || isApproved === true) {
-    return true;
-  }
-
-  if (
-    typeof status === "string" &&
-    status.trim().toLowerCase() === "approved"
-  ) {
-    return true;
-  }
-
-  if (
-    typeof approval === "string" &&
-    approval.trim().toLowerCase() === "approved"
-  ) {
-    return true;
-  }
-
-  if (approvedAt) {
-    return true;
-  }
-
-  return false;
-}
-
-// ======================================================
-// EVENT ID NORMALIZATION
-// ======================================================
-
-/**
- * Standalone meetings must return eventId: null.
- */
-function normalizeEventId(eventId) {
-  if (
-    eventId === null ||
-    eventId === undefined ||
-    eventId === "" ||
-    eventId === "undefined" ||
-    eventId === "standalone"
-  ) {
-    return null;
-  }
-
-  return String(eventId);
-}
-
-// ======================================================
-// GET /api/meetings
-// ======================================================
-
-/**
- * Fetch approved meetings associated with the authenticated member.
- *
- * MySQL table:
- *   meetings
- *
- * Expected columns include:
- *   firebase_key
- *   record_data
- *   aId
- *   bId
- *   eventId
- *   status
- *   scheduledAt
- *
- * This implementation assumes aId and bId contain the
- * participating member IDs.
- */
-export async function GET(request) {
-  try {
-    // --------------------------------------------------
-    // 1. Authenticate user
-    // --------------------------------------------------
-
-    const user = await requireUser(request);
-
-    if (user.mode !== "member" && user.mode !== "test") {
-      return jsonResponse(
-        { error: "Not allowed" },
-        403
+    if (!auth?.authorized) {
+      return response(
+        {
+          success: false,
+          message: auth?.message || "Authentication required.",
+        },
+        auth?.status || 401
       );
     }
 
-    const memberId = String(user.uid);
+    // Fetch all meetings, including pending and canceled.
+    const [rows] = await pool.execute(`
+      SELECT
+        m.id,
+        m.event_id,
+        m.a_id,
+        m.b_id,
+        m.scheduled_at,
+        m.end_time,
+        m.duration_min,
+        m.mode,
+        m.place,
+        m.topic,
+        m.notes,
+        m.status,
+        m.created_by,
+        m.responded_at,
+        m.created_at,
+        m.updated_at,
 
-    // --------------------------------------------------
-    // 2. Find meetings associated with this member
-    // --------------------------------------------------
+        a.full_name AS a_name,
+        a.business_name AS a_business,
 
-    /*
-     * Some imported values are stored as plain strings;
-     * others are JSON-encoded strings.
-     *
-     * Example:
-     *   member123
-     *   "member123"
-     */
+        b.full_name AS b_name,
+        b.business_name AS b_business,
 
-    const rawId = memberId;
-    const jsonId = JSON.stringify(memberId);
+        e.title AS event_title
 
-    const [rows] = await pool.execute(
-      `
-        SELECT *
-        FROM meetings
-        WHERE aId IN (?, ?)
-           OR bId IN (?, ?)
-        ORDER BY scheduledAt DESC
-      `,
-      [
-        rawId,
-        jsonId,
-        rawId,
-        jsonId,
-      ]
-    );
+      FROM meetings m
 
-    // --------------------------------------------------
-    // 3. Normalize and filter meetings
-    // --------------------------------------------------
+      LEFT JOIN members a
+        ON a.id = m.a_id
 
-    const meetings = [];
+      LEFT JOIN members b
+        ON b.id = m.b_id
 
-    for (const row of rows) {
-      const meeting = normalizeMeeting(row);
+      LEFT JOIN events e
+        ON e.id = m.event_id
 
-      // Return only approved meetings.
-      if (!isMeetingApproved(meeting)) {
-        continue;
-      }
+      ORDER BY m.scheduled_at DESC
+    `);
 
-      meetings.push({
-        ...meeting,
-        eventId: normalizeEventId(meeting.eventId),
-      });
-    }
+    const meetings = rows.map((row) => {
+      const scheduledAt = row.scheduled_at
+        ? new Date(row.scheduled_at).toISOString()
+        : null;
 
-    // --------------------------------------------------
-    // 4. Return API response
-    // --------------------------------------------------
+      const endTime = row.end_time
+        ? new Date(row.end_time).toISOString()
+        : null;
 
-    return jsonResponse(
-      {
-        meetings,
-      },
-      200
-    );
+      return {
+        id: String(row.id),
+        meetingId: String(row.id),
+
+        eventId: row.event_id
+          ? String(row.event_id)
+          : null,
+
+        eventTitle: row.event_title || "Unknown event",
+
+        aId: String(row.a_id),
+        bId: String(row.b_id),
+
+        aName: row.a_name || "Unknown member",
+        aBusiness: row.a_business || "",
+
+        bName: row.b_name || "Unknown member",
+        bBusiness: row.b_business || "",
+
+        scheduledAt,
+        endTime,
+
+        durationMin: Number(row.duration_min || 30),
+
+        mode: row.mode || "inperson",
+        place: row.place || "",
+        topic: row.topic || "",
+        notes: row.notes || "",
+
+        status: String(row.status || "pending").toLowerCase(),
+
+        createdBy: row.created_by || null,
+        respondedAt: row.responded_at
+          ? new Date(row.responded_at).toISOString()
+          : null,
+
+        createdAt: row.created_at
+          ? new Date(row.created_at).toISOString()
+          : null,
+
+        updatedAt: row.updated_at
+          ? new Date(row.updated_at).toISOString()
+          : null,
+      };
+    });
+
+    return response({
+      success: true,
+      meetings,
+      total: meetings.length,
+    });
   } catch (error) {
-    console.error(
-      "GET /api/meetings error:",
-      error
-    );
+    console.error("GET /api/meetings error:", error);
 
-    return jsonResponse(
+    return response(
       {
-        error: error.message || "Failed to fetch meetings.",
+        success: false,
+        message: "Failed to fetch meetings.",
+        error:
+          process.env.NODE_ENV === "development"
+            ? error.message
+            : undefined,
       },
-      error.status || 500
+      500
     );
   }
 }

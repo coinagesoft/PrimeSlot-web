@@ -1,74 +1,8 @@
 
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 
-const INITIAL_NOTIFICATIONS = [
-  {
-    id: 1,
-    title: "User Role Updated",
-    description:
-      "You have been assigned the 'Editor' role by an administrator.",
-    time: "15m ago",
-    category: "Account",
-    read: false,
-    icon: "ri-shield-user-line",
-    color: "primary",
-    user: "Admin",
-    createdAt: "2026-10-21T08:45:00",
-  },
-  {
-    id: 2,
-    title: "Account Approved",
-    description: "John Doe's account has been approved and is now active.",
-    time: "1h ago",
-    category: "Members",
-    read: false,
-    icon: "ri-user-follow-line",
-    color: "success",
-    user: "John Doe",
-    createdAt: "2026-10-21T08:00:00",
-  },
-  {
-    id: 3,
-    title: "New User Registration",
-    description:
-      "Mary Jane has registered and is awaiting account approval.",
-    time: "5h ago",
-    category: "Members",
-    read: true,
-    icon: "ri-user-add-line",
-    color: "info",
-    user: "Mary Jane",
-    createdAt: "2026-10-21T04:00:00",
-  },
-  {
-    id: 4,
-    title: "Permission Granted",
-    description:
-      "You have been granted access to the Financial Management module.",
-    time: "1d ago",
-    category: "Security",
-    read: true,
-    icon: "ri-lock-unlock-line",
-    color: "warning",
-    user: "Admin",
-    createdAt: "2026-10-20T09:00:00",
-  },
-  {
-    id: 5,
-    title: "Access Revoked",
-    description:
-      "Peter Jones's access to Project Planning has been revoked.",
-    time: "2d ago",
-    category: "Security",
-    read: true,
-    icon: "ri-shield-keyhole-line",
-    color: "danger",
-    user: "Peter Jones",
-    createdAt: "2026-10-19T09:00:00",
-  },
-];
 
 function NotificationIcon({ notification, size = 44 }) {
   return (
@@ -110,8 +44,9 @@ function NotificationBadge({ category }) {
 }
 
 export default function NotificationsPage() {
-  // Demo data only. Backend integration will be added later.
-  const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
+const [notifications, setNotifications] = useState([]);
+const [loading, setLoading] = useState(true);
+const [processing, setProcessing] = useState(false);
   const [activeFilter, setActiveFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -199,29 +134,67 @@ export default function NotificationsPage() {
     setNotice("Notification marked as unread.");
   };
 
-  const markAllAsRead = () => {
-    if (unreadCount === 0) return;
+const markAllAsRead = async () => {
+  if (unreadCount === 0 || processing) return;
+
+  try {
+    setProcessing(true);
+
+    await apiRequest("/api/notifications/mark-all-read", {
+      method: "PATCH",
+    });
 
     setNotifications((previous) =>
-      previous.map((notification) => ({ ...notification, read: true }))
+      previous.map((notification) => ({
+        ...notification,
+        read: true,
+      }))
     );
+
     setSelectedIds([]);
     setNotice("All notifications marked as read.");
-  };
+  } catch (error) {
+    console.error("Mark all notifications read error:", error);
+    setNotice(error.message || "Unable to mark notifications as read.");
+  } finally {
+    setProcessing(false);
+  }
+};
 
-  const markSelectedAsRead = () => {
-    if (selectedIds.length === 0) return;
+
+
+ const markSelectedAsRead = async () => {
+  if (selectedIds.length === 0 || processing) return;
+
+  try {
+    setProcessing(true);
+
+    await apiRequest("/api/notifications/mark-selected-read", {
+      method: "PATCH",
+      body: JSON.stringify({
+        ids: selectedIds,
+      }),
+    });
 
     setNotifications((previous) =>
       previous.map((notification) =>
-        selectedIds.includes(notification.id)
+        selectedIds.some(
+          (id) => String(id) === String(notification.id)
+        )
           ? { ...notification, read: true }
           : notification
       )
     );
+
     setSelectedIds([]);
     setNotice("Selected notifications marked as read.");
-  };
+  } catch (error) {
+    console.error("Mark selected notifications read error:", error);
+    setNotice(error.message || "Unable to update selected notifications.");
+  } finally {
+    setProcessing(false);
+  }
+};
 
   const deleteNotification = (id) => {
     const notification = notifications.find((item) => item.id === id);
@@ -230,52 +203,113 @@ export default function NotificationsPage() {
     setDeleteTarget(notification);
   };
 
-  const confirmDelete = () => {
-    if (!deleteTarget) return;
+ const confirmDelete = async () => {
+  if (!deleteTarget || processing) return;
 
-    setNotifications((previous) =>
-      previous.filter((notification) => notification.id !== deleteTarget.id)
-    );
-    setSelectedIds((previous) =>
-      previous.filter((id) => id !== deleteTarget.id)
-    );
-    setNotice("Notification deleted.");
-    setDeleteTarget(null);
-  };
+  const id = deleteTarget.id;
 
-  const deleteSelected = () => {
-    if (selectedIds.length === 0) return;
+  try {
+    setProcessing(true);
+
+    await apiRequest(`/api/notifications/${id}`, {
+      method: "DELETE",
+    });
 
     setNotifications((previous) =>
       previous.filter(
-        (notification) => !selectedIds.includes(notification.id)
+        (notification) => String(notification.id) !== String(id)
       )
     );
-    setSelectedIds([]);
-    setNotice("Selected notifications deleted.");
-  };
 
-  const clearReadNotifications = () => {
-    const readNotifications = notifications.filter(
-      (notification) => notification.read
+    setSelectedIds((previous) =>
+      previous.filter(
+        (selectedId) => String(selectedId) !== String(id)
+      )
     );
 
-    if (readNotifications.length === 0) {
-      setShowClearReadConfirmation(false);
-      return;
-    }
+    setNotice("Notification deleted.");
+    setDeleteTarget(null);
+  } catch (error) {
+    console.error("Delete notification error:", error);
+    setNotice(error.message || "Unable to delete notification.");
+  } finally {
+    setProcessing(false);
+  }
+};
 
-    const readIds = readNotifications.map((notification) => notification.id);
+ const deleteSelected = async () => {
+  if (selectedIds.length === 0 || processing) return;
+
+  try {
+    setProcessing(true);
+
+    await apiRequest("/api/notifications/delete-selected", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: selectedIds,
+      }),
+    });
+
+    const deletedIds = new Set(selectedIds.map(String));
 
     setNotifications((previous) =>
-      previous.filter((notification) => !notification.read)
+      previous.filter(
+        (notification) => !deletedIds.has(String(notification.id))
+      )
     );
+
+    setSelectedIds([]);
+    setNotice("Selected notifications deleted.");
+  } catch (error) {
+    console.error("Delete selected notifications error:", error);
+    setNotice(error.message || "Unable to delete selected notifications.");
+  } finally {
+    setProcessing(false);
+  }
+};
+
+ const clearReadNotifications = async () => {
+  if (processing) return;
+
+  const readNotifications = notifications.filter(
+    (notification) => notification.read
+  );
+
+  if (readNotifications.length === 0) {
+    setShowClearReadConfirmation(false);
+    return;
+  }
+
+  try {
+    setProcessing(true);
+
+    await apiRequest("/api/notifications/clear-read", {
+      method: "DELETE",
+    });
+
+    const readIds = new Set(
+      readNotifications.map((notification) => String(notification.id))
+    );
+
+    setNotifications((previous) =>
+      previous.filter(
+        (notification) => !readIds.has(String(notification.id))
+      )
+    );
+
     setSelectedIds((previous) =>
-      previous.filter((id) => !readIds.includes(id))
+      previous.filter((id) => !readIds.has(String(id)))
     );
+
     setShowClearReadConfirmation(false);
     setNotice("All read notifications cleared.");
-  };
+  } catch (error) {
+    console.error("Clear read notifications error:", error);
+    setNotice(error.message || "Unable to clear read notifications.");
+  } finally {
+    setProcessing(false);
+  }
+};
 
   const clearFilters = () => {
     setSearch("");
