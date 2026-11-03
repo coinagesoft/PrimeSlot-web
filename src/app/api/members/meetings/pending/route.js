@@ -1,113 +1,184 @@
+// src/app/api/meetings/pending/route.js
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { adminAuth, rtdb } from '@/lib/firebaseAdmin';
 import jwt from 'jsonwebtoken';
+import db from '@/lib/db';
 
-const DISABLE_AUTH = process.env.DISABLE_AUTH === 'true';
-const ADMIN_COOKIE = 'admin_session';
-const JWT_COOKIE = 'session';
-const JWT_SECRET = process.env.JWT_SECRET || 'MySuperSecretJWTSecret';
+const JWT_ISSUER = 'prime-slot';
+const JWT_AUDIENCE = 'prime-slot-client';
 
 function addCORS(res) {
   res.headers.set('Access-Control-Allow-Origin', '*');
   res.headers.set('Access-Control-Allow-Methods', 'GET,OPTIONS');
-  res.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.headers.set(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization'
+  );
+
   return res;
 }
 
-export async function OPTIONS() {
-  return addCORS(NextResponse.json({}, { status: 204 }));
+function errorResponse(message, status = 500) {
+  return addCORS(
+    NextResponse.json(
+      {
+        success: false,
+        error: message,
+      },
+      { status }
+    )
+  );
 }
 
-async function requireUser(req) {
-  if (DISABLE_AUTH) return { mode: 'test', uid: 'TEST_USER' };
+export async function OPTIONS() {
+  return addCORS(new NextResponse(null, { status: 204 }));
+}
 
-  const jar = await cookies();
+// Authenticate Flutter mobile user using Bearer JWT.
+function requireUser(req) {
+  const JWT_SECRET = process.env.JWT_SECRET;
 
-  // 1) try JWT
-  let token = null;
-  const auth =
-    req.headers.get('authorization') ||
-    req.headers.get('Authorization') ||
-    '';
-  if (auth && auth.startsWith('Bearer ')) {
-    token = auth.slice('Bearer '.length).trim();
+  if (!JWT_SECRET || JWT_SECRET.length < 32) {
+    throw Object.assign(
+      new Error('JWT_SECRET is missing or invalid'),
+      { status: 500 }
+    );
   }
+
+  const authorization = req.headers.get('authorization') || '';
+
+  if (!authorization.startsWith('Bearer ')) {
+    throw Object.assign(
+      new Error('Authorization token is required'),
+      { status: 401 }
+    );
+  }
+
+  const token = authorization.substring(7).trim();
+
   if (!token) {
-    token = jar.get(JWT_COOKIE)?.value || null;
+    throw Object.assign(
+      new Error('Invalid authorization token'),
+      { status: 401 }
+    );
   }
 
-  if (token && JWT_SECRET) {
-    try {
-      const payload = jwt.verify(token, JWT_SECRET);
-      return { mode: 'member', uid: payload.sub, payload };
-    } catch (e) {
-      // ignore, try admin
-    }
+  let payload;
+
+  try {
+    payload = jwt.verify(token, JWT_SECRET, {
+      algorithms: ['HS256'],
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    });
+  } catch (error) {
+    throw Object.assign(
+      new Error('Invalid or expired token'),
+      { status: 401 }
+    );
   }
 
-  // 2) fallback: admin_session
-  const session = jar.get(ADMIN_COOKIE)?.value;
-  if (!session)
-    throw Object.assign(new Error('Unauthorized'), { status: 401 });
-  const decoded = await adminAuth.verifySessionCookie(session, true);
-  return { mode: 'admin', uid: decoded.uid, decoded };
+  if (
+    typeof payload === 'string' ||
+    !payload.sub ||
+    payload.provider !== 'check-user' ||
+    payload.purpose !== 'test-preview'
+  ) {
+    throw Object.assign(
+      new Error('Invalid member authentication'),
+      { status: 401 }
+    );
+  }
+
+  return String(payload.sub);
 }
 
 export async function GET(req) {
   try {
-    const user = await requireUser(req);
+    // 1. Authenticate logged-in member.
+    const memberId = requireUser(req);
 
-    // Only allow member mode, as the task is for users in the token
-    if (user.mode !== 'member') {
-      return addCORS(
-        NextResponse.json({ error: 'Not allowed' }, { status: 403 })
-      );
+    // 2. Verify member exists and is active.
+    const [members] = await db.execute(
+      `SELECT id
+       FROM members
+       WHERE id = ?
+         AND is_active = 1
+       LIMIT 1`,
+      [memberId]
+    );
+
+    if (members.length === 0) {
+      return errorResponse('Member not found or inactive', 404);
     }
 
-    const memberId = user.uid;
+    // 3. Fetch all pending meetings involving this member.
+    const [meetings] = await db.execute(
+      `SELECT
+          m.id AS meetingId,
+          m.event_id AS eventId,
+          m.a_id AS aId,
+          m.b_id AS bId,
+          m.scheduled_at AS scheduledAt,
+          m.duration_min AS durationMin,
+          m.end_time AS endTime,
+          m.mode,
+          m.place,
+          m.topic,
+          m.notes,
+          m.status,
+          m.created_by AS createdBy,
+          m.responded_at AS respondedAt,
+          m.created_at AS createdAt,
+          m.updated_at AS updatedAt,
 
-    // Query memberMeetings for the member
-    const memberMeetingsRef = rtdb.ref(`/memberMeetings/${memberId}`);
-    const memberMeetingsSnap = await memberMeetingsRef.once('value');
-    const memberMeetings = memberMeetingsSnap.val();
+          a.full_name AS aName,
+          a.phone AS aPhone,
+          a.email AS aEmail,
+          a.profile_image_url AS aProfileImageUrl,
 
-    if (!memberMeetings) {
-      return addCORS(NextResponse.json({ meetings: [] }, { status: 200 }));
-    }
+          b.full_name AS bName,
+          b.phone AS bPhone,
+          b.email AS bEmail,
+          b.profile_image_url AS bProfileImageUrl
 
-    const pendingMeetings = [];
+       FROM meetings m
 
-    // For each eventId, check meetings with status 'pending'
-    for (const eventId in memberMeetings) {
-      const eventMeetings = memberMeetings[eventId];
-      for (const meetingId in eventMeetings) {
-        const meetingData = eventMeetings[meetingId];
-        if (meetingData.status === 'pending') {
-          // Fetch full meeting details from /meetings/${eventId}/${meetingId}
-          const fullMeetingSnap = await rtdb.ref(`/meetings/${eventId}/${meetingId}`).once('value');
-          if (fullMeetingSnap.exists()) {
-            const fullMeeting = fullMeetingSnap.val();
-            pendingMeetings.push({
-              meetingId,
-              eventId,
-              ...fullMeeting,
-            });
-          }
-        }
-      }
-    }
+       INNER JOIN members a
+          ON a.id = m.a_id
 
-    return addCORS(NextResponse.json({ meetings: pendingMeetings }, { status: 200 }));
-  } catch (e) {
+       INNER JOIN members b
+          ON b.id = m.b_id
+
+       WHERE
+          (m.a_id = ? OR m.b_id = ?)
+          AND m.status = 'pending'
+
+       ORDER BY m.created_at DESC`,
+      [memberId, memberId]
+    );
+
+    // 4. Return pending meetings.
     return addCORS(
       NextResponse.json(
-        { error: e.message || 'Server error' },
-        { status: e.status || 500 }
+        {
+          success: true,
+          meetings,
+          total: meetings.length,
+        },
+        { status: 200 }
       )
+    );
+
+  } catch (error) {
+    console.error('Pending meetings API error:', error);
+
+    return errorResponse(
+      error.message || 'Server error',
+      error.status || 500
     );
   }
 }

@@ -1,268 +1,356 @@
 // src/app/api/members/[id]/meetings/request/route.js
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { adminAuth, rtdb } from '@/lib/firebaseAdmin';
-import { z } from 'zod';
+import { randomUUID } from 'crypto';
 import jwt from 'jsonwebtoken';
+import { z } from 'zod';
+import db from '@/lib/db';
 
-const DISABLE_AUTH = process.env.DISABLE_AUTH === 'true';
-const ADMIN_COOKIE = 'admin_session';
-const JWT_COOKIE = 'session';
-const JWT_SECRET = process.env.JWT_SECRET || 'MySuperSecretJWTSecret';
+const JWT_ISSUER = 'prime-slot';
+const JWT_AUDIENCE = 'prime-slot-client';
 
 function addCORS(res) {
   res.headers.set('Access-Control-Allow-Origin', '*');
   res.headers.set('Access-Control-Allow-Methods', 'POST,OPTIONS');
-  res.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.headers.set(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization'
+  );
   return res;
 }
+
+function errorResponse(message, status = 500) {
+  return addCORS(
+    NextResponse.json({ success: false, error: message }, { status })
+  );
+}
+
 export async function OPTIONS() {
-  return addCORS(NextResponse.json({}, { status: 204 }));
+  return addCORS(new NextResponse(null, { status: 204 }));
 }
 
-async function requireUser(req) {
-  if (DISABLE_AUTH) return { mode: 'test', uid: 'TEST_USER' };
+// Mobile authentication: Bearer JWT only.
+function authenticateUser(req) {
+  const secret = process.env.JWT_SECRET;
 
-  const jar = await cookies();
-
-  // 1) try JWT
-  let token = null;
-  const auth =
-    req.headers.get('authorization') ||
-    req.headers.get('Authorization') ||
-    '';
-  if (auth && auth.startsWith('Bearer ')) {
-    token = auth.slice('Bearer '.length).trim();
+  if (!secret || secret.length < 32) {
+    throw Object.assign(
+      new Error('JWT_SECRET is missing or invalid'),
+      { status: 500 }
+    );
   }
+
+  const authorization = req.headers.get('authorization') || '';
+
+  if (!authorization.startsWith('Bearer ')) {
+    throw Object.assign(
+      new Error('Authorization token is required'),
+      { status: 401 }
+    );
+  }
+
+  const token = authorization.substring(7).trim();
+
   if (!token) {
-    token = jar.get(JWT_COOKIE)?.value || null;
+    throw Object.assign(
+      new Error('Invalid authorization token'),
+      { status: 401 }
+    );
   }
 
-  if (token && JWT_SECRET) {
-    try {
-      const payload = jwt.verify(token, JWT_SECRET);
-      return { mode: 'member', uid: payload.sub, payload };
-    } catch (e) {
-      // ignore, try admin
-    }
+  let payload;
+
+  try {
+    payload = jwt.verify(token, secret, {
+      algorithms: ['HS256'],
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    });
+  } catch {
+    throw Object.assign(
+      new Error('Invalid or expired token'),
+      { status: 401 }
+    );
   }
 
-  // 2) fallback: admin_session
-  const session = jar.get(ADMIN_COOKIE)?.value;
-  if (!session)
-    throw Object.assign(new Error('Unauthorized'), { status: 401 });
-  const decoded = await adminAuth.verifySessionCookie(session, true);
-  return { mode: 'admin', uid: decoded.uid, decoded };
+  if (
+    !payload ||
+    typeof payload === 'string' ||
+    !payload.sub ||
+    payload.provider !== 'check-user' ||
+    payload.purpose !== 'test-preview'
+  ) {
+    throw Object.assign(
+      new Error('Invalid member authentication'),
+      { status: 401 }
+    );
+  }
+
+  return String(payload.sub);
 }
 
+// Request body validation.
 const Schema = z.object({
-  eventId: z.string().min(1).optional(),
-  aId: z.string().min(1),
+  eventId: z.string().trim().min(1).optional().nullable(),
+
   scheduledAt: z.preprocess(
-    (v) => (typeof v === 'string' ? Date.parse(v) : Number(v)),
+    (value) => {
+      if (typeof value === 'string') {
+        return Date.parse(value);
+      }
+
+      return Number(value);
+    },
     z.number().int().positive()
   ),
-  durationMin: z.number().int().positive().default(30),
-  place: z.string().optional().default(''),
-  topic: z.string().optional().default(''),
+
+  durationMin: z.number().int().positive().max(1440).default(30),
+
+  place: z.string().max(500).optional().default(''),
+
+  topic: z.string().max(255).optional().default(''),
 });
 
+function createId() {
+  return randomUUID().replace(/-/g, '');
+}
+
 export async function POST(req, context) {
+  let connection;
+
   try {
+    // 1. Authenticate the logged-in member.
+    const requesterId = authenticateUser(req);
+
+    // 2. Get recipient ID from URL.
     const params = await context.params;
-    const user = await requireUser(req);
+    const recipientId = String(params?.id || '').trim();
 
-    // recipient from URL (bId)
-    const rawBId = params?.id;
-    const bId = String(rawBId ?? '').trim();
+    if (!recipientId || recipientId.toLowerCase() === 'undefined') {
+      return errorResponse('Invalid recipient member ID', 400);
+    }
 
-    const body = await req.json();
-    const parsed = Schema.parse(body);
-
-    // sanitise eventId: accept only a non-empty string that is NOT "undefined" / "null"
-    let eventIdRaw = parsed.eventId;
-    const hasEventId =
-      typeof eventIdRaw === 'string' &&
-      eventIdRaw.trim().length > 0 &&
-      eventIdRaw.trim().toLowerCase() !== 'undefined' &&
-      eventIdRaw.trim().toLowerCase() !== 'null';
-    const eventId = hasEventId ? eventIdRaw.trim() : null;
-
-    const aId = String(parsed.aId ?? '').trim();
-
-    if (
-      !aId ||
-      !bId ||
-      aId.toLowerCase() === 'undefined' ||
-      bId.toLowerCase() === 'undefined'
-    ) {
-      return addCORS(
-        NextResponse.json(
-          { error: 'Missing valid aId or bId', debug: { aId, bId } },
-          { status: 400 }
-        )
+    if (requesterId === recipientId) {
+      return errorResponse(
+        'You cannot request a meeting with yourself',
+        400
       );
     }
 
-    const now = Date.now();
-    const scheduledAt = Number(parsed.scheduledAt);
-    const durationMin = parsed.durationMin;
-    const endTime = scheduledAt + (durationMin * 60 * 1000); // convert min->ms
+    // 3. Validate request body.
+    const body = await req.json();
+    const parsed = Schema.parse(body);
 
-    // If eventId present (valid), use existing event-based flow (unchanged)
-    if (eventId) {
-      // auto-add both members to event if missing
-      const [aIn, bIn] = await Promise.all([
-        rtdb.ref(`/eventMembers/${eventId}/${aId}`).get(),
-        rtdb.ref(`/eventMembers/${eventId}/${bId}`).get(),
-      ]);
+    // Ignore placeholder event IDs.
+    let eventId = parsed.eventId?.trim() || null;
 
-      if (!aIn.exists()) {
-        await rtdb.ref(`/eventMembers/${eventId}/${aId}`).set({
-          status: 'Active',
-          addedAt: now,
-          source: 'auto-request',
-        });
-      }
-
-      if (!bIn.exists()) {
-        await rtdb.ref(`/eventMembers/${eventId}/${bId}`).set({
-          status: 'Active',
-          addedAt: now,
-          source: 'auto-request',
-        });
-      }
-
-      const newMeetingRef = rtdb.ref(`/meetings/${eventId}`).push();
-      const meetingId = newMeetingRef.key;
-
-      const meeting = {
-        aId,
-        bId,
-        eventId,
-        scheduledAt,
-        durationMin,
-        endTime,
-        mode: 'inperson',
-        place: parsed.place,
-        topic: parsed.topic,
-        notes: '',
-        status: 'pending',
-        createdAt: now,
-        updatedAt: now,
-        createdBy: user.uid || aId,
-      };
-
-      const updates = {};
-      updates[`/meetings/${eventId}/${meetingId}`] = meeting;
-
-      updates[`/memberMeetings/${aId}/${eventId}/${meetingId}`] = {
-        eventId,
-        meetingId,
-        scheduledAt: meeting.scheduledAt,
-        durationMin: meeting.durationMin,
-        endTime: meeting.endTime,
-        status: meeting.status,
-        otherPartyId: bId,
-        topic: meeting.topic,
-      };
-      updates[`/memberMeetings/${bId}/${eventId}/${meetingId}`] = {
-        eventId,
-        meetingId,
-        scheduledAt: meeting.scheduledAt,
-        durationMin: meeting.durationMin,
-        endTime: meeting.endTime,
-        status: meeting.status,
-        otherPartyId: aId,
-        topic: meeting.topic,
-      };
-
-      const notifRef = rtdb.ref(`/notifications/${bId}`).push();
-      updates[`/notifications/${bId}/${notifRef.key}`] = {
-        type: 'meeting_request',
-        meetingId,
-        eventId,
-        from: aId,
-        to: bId,
-        createdAt: now,
-        read: false,
-      };
-
-      // Add contacts (non-destructive)
-      updates[`/userContacts/${aId}/${bId}`] = { addedAt: now, meetingId };
-      updates[`/userContacts/${bId}/${aId}`] = { addedAt: now, meetingId };
-
-      await rtdb.ref().update(updates);
-      return addCORS(NextResponse.json({ id: meetingId, ok: true }, { status: 201 }));
+    if (
+      eventId &&
+      ['undefined', 'null'].includes(eventId.toLowerCase())
+    ) {
+      eventId = null;
     }
 
-    // --- NO valid eventId → create a standalone meeting (safe, no /meetings/undefined) ---
-    const newStandRef = rtdb.ref('/meetings_standalone').push();
-    const meetingId = newStandRef.key;
-    const meetingPath = `/meetings_standalone/${meetingId}`;
+    // 4. Convert timestamp to MySQL-compatible Date values.
+    const scheduledAt = new Date(parsed.scheduledAt);
 
-    const meeting = {
-      aId,
-      bId,
-      eventId: null,
-      scheduledAt,
-      durationMin,
-      endTime,
-      mode: 'inperson',
-      place: parsed.place,
-      topic: parsed.topic,
-      notes: '',
-      status: 'pending',
-      createdAt: now,
-      updatedAt: now,
-      createdBy: user.uid || aId,
-    };
+    if (Number.isNaN(scheduledAt.getTime())) {
+      return errorResponse('Invalid meeting date or time', 400);
+    }
 
-    const updates = {};
-    updates[meetingPath] = meeting;
+    const endTime = new Date(
+      scheduledAt.getTime() + parsed.durationMin * 60 * 1000
+    );
 
-    // index under memberMeetings -> standalone
-    updates[`/memberMeetings/${aId}/standalone/${meetingId}`] = {
-      meetingId,
-      scheduledAt,
-      durationMin,
-      endTime,
-      status: meeting.status,
-      otherPartyId: bId,
-      topic: meeting.topic,
-    };
-    updates[`/memberMeetings/${bId}/standalone/${meetingId}`] = {
-      meetingId,
-      scheduledAt,
-      durationMin,
-      endTime,
-      status: meeting.status,
-      otherPartyId: aId,
-      topic: meeting.topic,
-    };
+    const meetingId = createId();
+    const notificationId = createId();
 
-    // notification to recipient (eventId null)
-    const notifRef = rtdb.ref(`/notifications/${bId}`).push();
-    updates[`/notifications/${bId}/${notifRef.key}`] = {
-      type: 'meeting_request',
-      meetingId,
-      eventId: null,
-      from: aId,
-      to: bId,
-      createdAt: now,
-      read: false,
-    };
+    connection = await db.getConnection();
 
-    // contacts (non-destructive)
-    updates[`/userContacts/${aId}/${bId}`] = { addedAt: now, meetingId };
-    updates[`/userContacts/${bId}/${aId}`] = { addedAt: now, meetingId };
+    await connection.beginTransaction();
 
-    await rtdb.ref().update(updates);
-    return addCORS(NextResponse.json({ id: meetingId, ok: true }, { status: 201 }));
-  } catch (e) {
-    return addCORS(NextResponse.json({ error: e.message || 'Server error' }, { status: e.status || 500 }));
+    // 5. Verify requester and recipient exist and are active.
+    const [members] = await connection.execute(
+      `SELECT id, full_name
+       FROM members
+       WHERE id IN (?, ?)
+         AND is_active = 1`,
+      [requesterId, recipientId]
+    );
+
+    const requesterExists = members.some(
+      (member) => String(member.id) === requesterId
+    );
+
+    const recipientExists = members.some(
+      (member) => String(member.id) === recipientId
+    );
+
+    if (!requesterExists) {
+      throw Object.assign(
+        new Error('Your member account was not found or is inactive'),
+        { status: 404 }
+      );
+    }
+
+    if (!recipientExists) {
+      throw Object.assign(
+        new Error('Recipient member was not found or is inactive'),
+        { status: 404 }
+      );
+    }
+
+    // 6. If eventId is supplied, verify that the event exists.
+    if (eventId) {
+      const [events] = await connection.execute(
+        `SELECT id
+         FROM events
+         WHERE id = ?`,
+        [eventId]
+      );
+
+      if (events.length === 0) {
+        throw Object.assign(
+          new Error('The selected event does not exist'),
+          { status: 400 }
+        );
+      }
+    }
+
+    // 7. Create meeting.
+    await connection.execute(
+      `INSERT INTO meetings (
+          id,
+          event_id,
+          a_id,
+          b_id,
+          scheduled_at,
+          duration_min,
+          end_time,
+          mode,
+          place,
+          topic,
+          notes,
+          status,
+          created_by,
+          created_at,
+          updated_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [
+        meetingId,
+        eventId,
+        requesterId,
+        recipientId,
+        scheduledAt,
+        parsed.durationMin,
+        endTime,
+        'inperson',
+        parsed.place,
+        parsed.topic,
+        '',
+        'pending',
+        requesterId,
+      ]
+    );
+
+    // 8. Add both members to each other's contacts.
+    // Existing contacts are preserved.
+    await connection.execute(
+      `INSERT INTO contacts (
+          member_id,
+          contact_id,
+          meeting_id
+       )
+       VALUES
+          (?, ?, ?),
+          (?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+          meeting_id = COALESCE(contacts.meeting_id, VALUES(meeting_id))`,
+      [
+        requesterId,
+        recipientId,
+        meetingId,
+
+        recipientId,
+        requesterId,
+        meetingId,
+      ]
+    );
+
+    // 9. Create notification for recipient.
+    await connection.execute(
+      `INSERT INTO notifications (
+          id,
+          member_id,
+          type,
+          title,
+          body,
+          meeting_id,
+          event_id,
+          from_member_id,
+          is_read,
+          created_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())`,
+      [
+        notificationId,
+        recipientId,
+        'meeting_request',
+        'New Meeting Request',
+        'You have received a new meeting request.',
+        meetingId,
+        eventId,
+        requesterId,
+      ]
+    );
+
+    // 10. Commit all changes.
+    await connection.commit();
+
+    return addCORS(
+      NextResponse.json(
+        {
+          success: true,
+          ok: true,
+          id: meetingId,
+          meetingId,
+          eventId,
+          message: 'Meeting request sent successfully',
+        },
+        { status: 201 }
+      )
+    );
+
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error('Meeting transaction rollback failed:', rollbackError);
+      }
+    }
+
+    if (error instanceof z.ZodError) {
+      return errorResponse(
+        error.issues.map((issue) => issue.message).join(', '),
+        400
+      );
+    }
+
+    console.error('Meeting request API error:', error);
+
+    return errorResponse(
+      error.message || 'Server error',
+      error.status || 500
+    );
+
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 }
