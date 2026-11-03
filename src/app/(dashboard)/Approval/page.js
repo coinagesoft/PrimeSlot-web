@@ -223,7 +223,7 @@ export default function ProfileApprovalsPage() {
       }
 
       const response = await fetch(
-        `/api/profile-approvals?${params.toString()}`,
+        `/api/profile?${params.toString()}`,
         {
           method: "GET",
           cache: "no-store",
@@ -292,7 +292,7 @@ export default function ProfileApprovalsPage() {
 
     try {
       const response = await fetch(
-        `/api/profile-approvals/${encodeURIComponent(id)}/approve`,
+        `/api/profile/${encodeURIComponent(id)}/approve`,
         {
           method: "PATCH",
           credentials: "same-origin",
@@ -330,7 +330,7 @@ export default function ProfileApprovalsPage() {
 
     try {
       const response = await fetch(
-        `/api/profile-approvals/${encodeURIComponent(id)}/reject`,
+        `/api/profile/${encodeURIComponent(id)}/reject`,
         {
           method: "PATCH",
           credentials: "same-origin",
