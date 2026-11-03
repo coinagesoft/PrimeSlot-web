@@ -1,4 +1,3 @@
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -20,43 +19,32 @@ export async function OPTIONS() {
   return addCORS(new NextResponse(null, { status: 204 }));
 }
 
-function parseJson(value) {
-  if (value == null) return null;
-  if (typeof value !== "string") return value;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
 function buildMember(row) {
-  const record = parseJson(row.record_data);
-
   return {
-    ...(
-      record &&
-      typeof record === "object" &&
-      !Array.isArray(record)
-        ? record
-        : {}
-    ),
-    firebase_key: row.firebase_key,
-    phone: parseJson(row.phone),
-    businessName: parseJson(row.businessName),
-    city: parseJson(row.city),
-    email: parseJson(row.email),
-    region: parseJson(row.region),
-    fullName: parseJson(row.fullName) ?? record?.fullName ?? null,
-    createdAt: parseJson(row.createdAt),
-    updatedAt: parseJson(row.updatedAt),
-    chapterName: parseJson(row.chapterName),
-    memberStatus: parseJson(row.memberStatus),
-    trafficLight: parseJson(row.trafficLight),
-    businessCategory: parseJson(row.businessCategory),
-    notes: parseJson(row.notes),
-    userProfile: parseJson(row.userProfile)
+    id: row.id,
+    fullName: row.full_name,
+    phone: row.phone,
+    email: row.email,
+    businessName: row.business_name,
+    businessCategory: row.business_category,
+    chapterName: row.chapter_name,
+    region: row.region,
+    city: row.city,
+    memberStatus: row.member_status,
+    trafficLight: row.traffic_light,
+    profileImageUrl: row.profile_image_url,
+    notes: row.notes,
+    firebaseUid: row.firebase_uid,
+    isActive: Boolean(row.is_active),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+
+    // Compatibility field for the existing Flutter login flow.
+    // Approval information must be obtained from the profile approval API
+    // or an appropriate MySQL table if one exists.
+    userProfile: {
+      approved: false
+    }
   };
 }
 
@@ -78,7 +66,7 @@ export async function GET(request) {
       );
     }
 
-    // Bearer token is required. Cookies are not accepted.
+    // Bearer token is required.
     const authorization = request.headers.get("authorization") || "";
     const match = authorization.match(/^Bearer\s+(\S+)$/i);
     const token = match?.[1];
@@ -95,6 +83,7 @@ export async function GET(request) {
       );
     }
 
+    // Verify JWT.
     let decoded;
 
     try {
@@ -103,7 +92,7 @@ export async function GET(request) {
         audience: "prime-slot-client",
         algorithms: ["HS256"]
       });
-    } catch {
+    } catch (error) {
       return addCORS(
         NextResponse.json(
           {
@@ -115,7 +104,7 @@ export async function GET(request) {
       );
     }
 
-    // Accept only tokens issued by the preview phone-login endpoint.
+    // Accept only preview phone-login tokens.
     if (
       !decoded ||
       typeof decoded === "string" ||
@@ -135,29 +124,32 @@ export async function GET(request) {
       );
     }
 
-    const memberId = decoded.sub;
+    const memberId = decoded.sub.trim();
 
+    // Fetch member using the actual MySQL primary key.
     const [rows] = await db.execute(
       `
         SELECT
-          firebase_key,
-          record_data,
+          id,
+          full_name,
           phone,
-          businessName,
-          city,
           email,
+          business_name,
+          business_category,
+          chapter_name,
           region,
-          fullName,
-          createdAt,
-          updatedAt,
-          chapterName,
-          memberStatus,
-          trafficLight,
-          businessCategory,
+          city,
+          member_status,
+          traffic_light,
+          profile_image_url,
           notes,
-          userProfile
+          firebase_uid,
+          is_active,
+          created_at,
+          updated_at
         FROM members
-        WHERE firebase_key = ?
+        WHERE id = ?
+          AND is_active = 1
         LIMIT 1
       `,
       [memberId]
@@ -168,7 +160,7 @@ export async function GET(request) {
         NextResponse.json(
           {
             success: false,
-            message: "Member not found"
+            message: "Member not found or inactive"
           },
           { status: 404 }
         )
@@ -181,7 +173,7 @@ export async function GET(request) {
       NextResponse.json(
         {
           success: true,
-          memberId,
+          memberId: rows[0].id,
           member
         },
         { status: 200 }
@@ -190,7 +182,8 @@ export async function GET(request) {
   } catch (error) {
     console.error("Profile route MySQL error:", {
       message: error?.message,
-      code: error?.code
+      code: error?.code,
+      sqlMessage: error?.sqlMessage
     });
 
     return addCORS(
