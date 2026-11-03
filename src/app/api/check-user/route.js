@@ -1,4 +1,3 @@
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -24,57 +23,8 @@ function digitsOnly(value) {
   return String(value ?? "").replace(/\D/g, "");
 }
 
-function parseJson(value) {
-  if (value == null) return null;
-  if (typeof value !== "string") return value;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-function extractPhoneValue(value) {
-  value = parseJson(value);
-
-  if (value == null) return "";
-
-  if (typeof value === "string" || typeof value === "number") {
-    return String(value);
-  }
-
-  if (typeof value === "object") {
-    const keys = [
-      "Value",
-      "value",
-      "phone",
-      "Phone",
-      "mobile",
-      "Mobile",
-      "number",
-      "phoneRaw",
-      "contact"
-    ];
-
-    for (const key of keys) {
-      if (value[key] != null) {
-        const result = extractPhoneValue(value[key]);
-        if (result) return result;
-      }
-    }
-
-    for (const item of Object.values(value)) {
-      const result = extractPhoneValue(item);
-      if (result) return result;
-    }
-  }
-
-  return "";
-}
-
 function phoneMatches(storedValue, inputDigits) {
-  const storedDigits = digitsOnly(extractPhoneValue(storedValue));
+  const storedDigits = digitsOnly(storedValue);
 
   if (storedDigits.length < 10 || inputDigits.length < 10) {
     return false;
@@ -112,7 +62,7 @@ export async function POST(request) {
   let stage = "initialization";
 
   try {
-    // Preview-only login. Keep disabled in production.
+    // Preview-only login. Keep disabled unless explicitly enabled.
     stage = "preview-login-check";
 
     if (process.env.PREVIEW_PHONE_LOGIN_ENABLED !== "true") {
@@ -196,46 +146,36 @@ export async function POST(request) {
 
     stage = "mysql-member-query";
 
-    const [rows] = await db.execute(`
+    const [rows] = await db.execute(
+      `
       SELECT
-        firebase_key,
-        record_data,
+        id,
+        full_name,
         phone,
-        businessName,
-        city,
         email,
+        business_name,
+        business_category,
+        chapter_name,
         region,
-        fullName,
-        createdAt,
-        updatedAt,
-        chapterName,
-        memberStatus,
-        trafficLight,
-        businessCategory,
+        city,
+        member_status,
+        traffic_light,
+        profile_image_url,
         notes,
-        userProfile
+        firebase_uid,
+        is_active,
+        created_at,
+        updated_at
       FROM members
-    `);
+      WHERE is_active = 1
+      `
+    );
 
     stage = "phone-matching";
 
-    let foundRow = null;
-
-    for (const row of rows) {
-      const record = parseJson(row.record_data);
-
-      const candidates = [
-        row.phone,
-        record?.phone,
-        record?.mobile,
-        record?.phoneRaw
-      ];
-
-      if (candidates.some(value => phoneMatches(value, inputDigits))) {
-        foundRow = row;
-        break;
-      }
-    }
+    const foundRow = rows.find(row =>
+      phoneMatches(row.phone, inputDigits)
+    );
 
     if (!foundRow) {
       return addCORS(
@@ -251,10 +191,12 @@ export async function POST(request) {
     stage = "build-member";
 
     const member = buildMember(foundRow);
-    const memberId = String(foundRow.firebase_key);
 
-    if (!memberId || memberId === "undefined" || memberId === "null") {
-      throw new Error("Matched member has no firebase_key");
+    // Use MySQL primary key instead of the removed Firebase key.
+    const memberId = String(foundRow.id ?? "").trim();
+
+    if (!memberId) {
+      throw new Error("Matched member has no MySQL id");
     }
 
     stage = "generate-jwt";
@@ -278,7 +220,6 @@ export async function POST(request) {
 
     stage = "send-response";
 
-    // Return the JWT directly. Do not create a session cookie.
     return addCORS(
       NextResponse.json({
         ok: true,
