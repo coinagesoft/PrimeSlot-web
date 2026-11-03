@@ -87,31 +87,24 @@ function phoneMatches(storedValue, inputDigits) {
 }
 
 function buildMember(row) {
-  const record = parseJson(row.record_data);
-
   return {
-    ...(
-      record &&
-      typeof record === "object" &&
-      !Array.isArray(record)
-        ? record
-        : {}
-    ),
-    firebase_key: row.firebase_key,
-    phone: parseJson(row.phone),
-    businessName: parseJson(row.businessName),
-    city: parseJson(row.city),
-    email: parseJson(row.email),
-    region: parseJson(row.region),
-    fullName: parseJson(row.fullName) ?? record?.fullName ?? null,
-    createdAt: parseJson(row.createdAt),
-    updatedAt: parseJson(row.updatedAt),
-    chapterName: parseJson(row.chapterName),
-    memberStatus: parseJson(row.memberStatus),
-    trafficLight: parseJson(row.trafficLight),
-    businessCategory: parseJson(row.businessCategory),
-    notes: parseJson(row.notes),
-    userProfile: parseJson(row.userProfile)
+    id: row.id,
+    fullName: row.full_name,
+    phone: row.phone,
+    email: row.email,
+    businessName: row.business_name,
+    businessCategory: row.business_category,
+    chapterName: row.chapter_name,
+    region: row.region,
+    city: row.city,
+    memberStatus: row.member_status,
+    trafficLight: row.traffic_light,
+    profileImageUrl: row.profile_image_url,
+    notes: row.notes,
+    firebaseUid: row.firebase_uid,
+    isActive: Boolean(row.is_active),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
