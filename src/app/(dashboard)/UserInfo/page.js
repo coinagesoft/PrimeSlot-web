@@ -1047,7 +1047,16 @@ export default function UserInfoPage() {
           </div>
         )}
 
-
+{loadingUsers && (
+  <div className="alert alert-info d-flex align-items-center gap-2 mb-4">
+    <span
+      className="spinner-border spinner-border-sm"
+      role="status"
+      aria-hidden="true"
+    />
+    Loading users...
+  </div>
+)}
 
         <div className="row g-3 g-xl-4 mb-4">
           <StatCard
@@ -1182,93 +1191,89 @@ export default function UserInfoPage() {
                   <th className="text-end">Actions</th>
                 </tr>
               </thead>
+<tbody>
+  {!loadingUsers && filteredUsers.map((user) => (
+    <tr key={user.id}>
+      <td>
+        <div className="d-flex align-items-center gap-3">
+          <UserAvatar name={user.name} avatar={user.avatar} />
+          <div className="min-w-0">
+            <div className="fw-semibold">{user.name}</div>
+            <small className="text-muted user-info-muted">
+              ID: {user.id}
+            </small>
+          </div>
+        </div>
+      </td>
 
-              <tbody>
-                {filteredUsers.map((user) => (
-                  <tr key={user.id}>
-                    <td>
-                      <div className="d-flex align-items-center gap-3">
-                        <UserAvatar name={user.name} avatar={user.avatar} />
-                        <div className="min-w-0">
-                          <div className="fw-semibold">{user.name}</div>
-                          <small className="text-muted user-info-muted">
-                            ID: {user.id}
-                          </small>
-                        </div>
-                      </div>
-                    </td>
+      <td>
+        <div>{user.email}</div>
+        <small className="text-muted user-info-muted">
+          {user.phone || "No phone added"}
+        </small>
+      </td>
 
-                    <td>
-                      <div>{user.email}</div>
-                      <small className="text-muted user-info-muted">
-                        {user.phone || "No phone added"}
-                      </small>
-                    </td>
+      <td>
+        <RoleBadge role={user.role} />
+      </td>
 
-                    <td>
-                      <RoleBadge role={user.role} />
-                    </td>
+      <td>
+        <StatusBadge status={user.status} />
+      </td>
 
-                    <td>
-                      <StatusBadge status={user.status} />
-                    </td>
+      <td className="text-nowrap">{user.joined}</td>
 
-                    <td className="text-nowrap">{user.joined}</td>
+      <td>
+        <div className="d-flex justify-content-end align-items-center gap-1">
+          <button
+            type="button"
+            className="btn btn-icon btn-text-secondary rounded-pill"
+            title="View user"
+            aria-label={`View ${user.name}`}
+            onClick={() => setSelectedUser(user)}
+          >
+            <i className="ri-eye-line fs-5" aria-hidden="true" />
+          </button>
 
-                    <td>
-                      <div className="d-flex justify-content-end align-items-center gap-1">
-                        <button
-                          type="button"
-                          className="btn btn-icon btn-text-secondary rounded-pill"
-                          title="View user"
-                          aria-label={`View ${user.name}`}
-                          onClick={() => setSelectedUser(user)}
-                        >
-                          <i className="ri-eye-line fs-5" aria-hidden="true" />
-                        </button>
+          <button
+            type="button"
+            className="btn btn-icon btn-text-secondary rounded-pill"
+            title="Edit user"
+            aria-label={`Edit ${user.name}`}
+            onClick={() => openEditModal(user)}
+          >
+            <i className="ri-edit-line fs-5" aria-hidden="true" />
+          </button>
 
-                        <button
-                          type="button"
-                          className="btn btn-icon btn-text-secondary rounded-pill"
-                          title="Edit user"
-                          aria-label={`Edit ${user.name}`}
-                          onClick={() => openEditModal(user)}
-                        >
-                          <i className="ri-edit-line fs-5" aria-hidden="true" />
-                        </button>
+          <button
+            type="button"
+            className="btn btn-icon btn-text-danger rounded-pill"
+            title="Delete user"
+            aria-label={`Delete ${user.name}`}
+            onClick={() => setShowDeleteModal(user)}
+          >
+            <i className="ri-delete-bin-line fs-5" aria-hidden="true" />
+          </button>
+        </div>
+      </td>
+    </tr>
+  ))}
 
-                        <button
-                          type="button"
-                          className="btn btn-icon btn-text-danger rounded-pill"
-                          title="Delete user"
-                          aria-label={`Delete ${user.name}`}
-                          onClick={() => setShowDeleteModal(user)}
-                        >
-                          <i
-                            className="ri-delete-bin-line fs-5"
-                            aria-hidden="true"
-                          />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-
-                {filteredUsers.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="text-center py-5">
-                      <i
-                        className="ri-user-search-line fs-1 text-muted d-block mb-2"
-                        aria-hidden="true"
-                      />
-                      <h6 className="mb-1 fw-semibold">No users found</h6>
-                      <p className="text-muted user-info-muted mb-0">
-                        Try changing your search or filter options.
-                      </p>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
+  {!loadingUsers && filteredUsers.length === 0 && (
+    <tr>
+      <td colSpan={6} className="text-center py-5">
+        <i
+          className="ri-user-search-line fs-1 text-muted d-block mb-2"
+          aria-hidden="true"
+        />
+        <h6 className="mb-1 fw-semibold">No users found</h6>
+        <p className="text-muted user-info-muted mb-0">
+          Try changing your search or filter options.
+        </p>
+      </td>
+    </tr>
+  )}
+</tbody>
             </table>
           </div>
 

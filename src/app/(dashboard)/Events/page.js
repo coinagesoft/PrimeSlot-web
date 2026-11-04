@@ -210,30 +210,30 @@ export default function EventsPage() {
   const [notice, setNotice] = useState("");
   const [deleteTarget, setDeleteTarget] = useState(null);
 
-  const fetchEvents = async () => {
-    try {
-      setApiError("");
+const fetchEvents = async () => {
+  try {
+    setIsLoading(true);
+    setApiError("");
 
-      const response = await fetch("/api/events", {
-        method: "GET",
-        cache: "no-store",
-      });
+    const response = await fetch("/api/events", {
+      method: "GET",
+      cache: "no-store",
+    });
 
-      const result = await response.json();
+    const result = await response.json();
 
-      if (!response.ok) {
-        throw new Error(result.error || "Failed to fetch events.");
-      }
-
-      setEvents(Array.isArray(result.records) ? result.records : []);
-    } catch (error) {
-      console.error("Error fetching events:", error);
-      setApiError(error.message || "Unable to load events.");
-      throw error;
-    } finally {
-      setIsLoading(false);
+    if (!response.ok) {
+      throw new Error(result.error || "Failed to fetch events.");
     }
-  };
+
+    setEvents(Array.isArray(result.records) ? result.records : []);
+  } catch (error) {
+    console.error("Error fetching events:", error);
+    setApiError(error.message || "Unable to load events.");
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   useEffect(() => {
     fetchEvents();
@@ -516,7 +516,17 @@ export default function EventsPage() {
           Create event
         </button>
       </div>
-
+     
+      {isLoading && (
+        <div className="alert alert-info d-flex align-items-center gap-2 mb-4">
+          <span
+            className="spinner-border spinner-border-sm"
+            role="status"
+            aria-hidden="true"
+          />
+          Loading events...
+        </div>
+      )}
       {notice && (
         <div
           className="alert alert-success alert-dismissible d-flex align-items-center mb-4"
@@ -697,61 +707,65 @@ export default function EventsPage() {
           Showing {filteredEvents.length} of {events.length} events
         </span>
       </div>
+{filteredEvents.length === 0 ? (
+  <div className="card">
+    <div className="card-body text-center py-5">
+      <div
+        className="d-flex align-items-center justify-content-center rounded-circle mx-auto mb-3"
+        style={{
+          width: 72,
+          height: 72,
+          background: "rgba(105,108,255,0.12)",
+          color: "#696cff",
+        }}
+      >
+        <i className="ri-calendar-close-line" style={{ fontSize: 32 }} />
+      </div>
 
-      {isLoading ? (
-        <div className="card">
-          <div className="card-body text-center py-5">
-            <div
-              className="d-flex align-items-center justify-content-center rounded-circle mx-auto mb-3"
-              style={{
-                width: 72,
-                height: 72,
-                background: "rgba(105,108,255,0.12)",
-                color: "#696cff",
-              }}
-            >
-              <i className="ri-calendar-close-line" style={{ fontSize: 32 }} />
-            </div>
-            <h5>
-              {events.length === 0 ? "No events yet" : "No matching events"}
-            </h5>
-            <p className="text-muted mb-4">
-              {events.length === 0
-                ? "Create your first event to get started."
-                : "Try changing your search or filter settings."}
-            </p>
-            {events.length === 0 ? (
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={openCreateModal}
-              >
-                <i className="ri-add-line me-1" />
-                Create your first event
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn btn-outline-primary"
-                onClick={clearFilters}
-              >
-                Clear filters
-              </button>
-            )}
-          </div>
-        </div>
+      <h5>
+        {events.length === 0
+          ? "No events yet"
+          : "No matching events"}
+      </h5>
+
+      <p className="text-muted mb-4">
+        {events.length === 0
+          ? "Create your first event to get started."
+          : "Try changing your search or filter settings."}
+      </p>
+
+      {events.length === 0 ? (
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={openCreateModal}
+        >
+          <i className="ri-add-line me-1" />
+          Create your first event
+        </button>
       ) : (
-        <div className="row g-4">
-          {filteredEvents.map((event) => (
-            <EventCard
-              key={event.id}
-              event={event}
-              onEdit={openEditModal}
-              onDelete={handleDelete}
-            />
-          ))}
-        </div>
+        <button
+          type="button"
+          className="btn btn-outline-primary"
+          onClick={clearFilters}
+        >
+          Clear filters
+        </button>
       )}
+    </div>
+  </div>
+) : (
+  <div className="row g-4">
+    {filteredEvents.map((event) => (
+      <EventCard
+        key={event.id}
+        event={event}
+        onEdit={openEditModal}
+        onDelete={handleDelete}
+      />
+    ))}
+  </div>
+)}
 
       {isModalOpen && (
         <div

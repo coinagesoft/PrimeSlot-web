@@ -466,6 +466,17 @@ export default function ProfileApprovalsPage() {
           <button type="button" className="btn-close" onClick={() => setNotice("")} aria-label="Close notification" />
         </div>}
 
+        {loading && (
+  <div className="alert alert-info d-flex align-items-center gap-2 mb-4">
+    <span
+      className="spinner-border spinner-border-sm"
+      role="status"
+      aria-hidden="true"
+    />
+    Loading profile requests...
+  </div>
+)}
+
         <div className="row g-3 g-xl-4 mb-4">
           <StatCard title="Total Requests" value={stats.total} icon="ri-file-list-3-line" tone="primary" />
           <StatCard title="Pending Review" value={stats.pending} icon="ri-time-line" tone="warning" />
@@ -499,13 +510,48 @@ export default function ProfileApprovalsPage() {
             <table className="table table-hover align-middle">
               <thead className="table-light"><tr><th>Member</th><th>Request ID</th><th>Submitted</th><th>Status</th><th className="text-end">Action</th></tr></thead>
               <tbody>
-                {filteredRequests.map((request) => <tr key={request.id}>
-                  <td><div className="d-flex align-items-center gap-3"><div className="pa-avatar">{initials(request.name)}</div><div className="min-w-0"><div className="fw-semibold">{request.name}</div><small className="pa-muted text-break">{request.email}</small></div></div></td>
-                  <td className="text-nowrap">{request.id}</td><td className="text-nowrap">{request.submittedAt}</td><td><StatusBadge status={request.status} /></td>
-                  <td><div className="d-flex justify-content-end"><button type="button" className="btn btn-sm btn-outline-primary" onClick={() => setSelectedRequest(request)}><i className="ri-eye-line me-1" />Review</button></div></td>
-                </tr>)}
-                {filteredRequests.length === 0 && <tr><td colSpan={5} className="text-center py-5"><i className="ri-file-search-line fs-1 text-muted d-block mb-2" /><h6 className="mb-1 fw-semibold">No requests found</h6><p className="pa-muted mb-0">Try changing your search or status filter.</p></td></tr>}
-              </tbody>
+  {!loading && filteredRequests.map((request) => (
+    <tr key={request.id}>
+      <td>
+        <div className="d-flex align-items-center gap-3">
+          <div className="pa-avatar">{initials(request.name)}</div>
+          <div className="min-w-0">
+            <div className="fw-semibold">{request.name}</div>
+            <small className="pa-muted text-break">{request.email}</small>
+          </div>
+        </div>
+      </td>
+
+      <td className="text-nowrap">{request.id}</td>
+      <td className="text-nowrap">{request.submittedAt}</td>
+      <td><StatusBadge status={request.status} /></td>
+
+      <td>
+        <div className="d-flex justify-content-end">
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-primary"
+            onClick={() => setSelectedRequest(request)}
+          >
+            <i className="ri-eye-line me-1" />Review
+          </button>
+        </div>
+      </td>
+    </tr>
+  ))}
+
+  {!loading && filteredRequests.length === 0 && (
+    <tr>
+      <td colSpan={5} className="text-center py-5">
+        <i className="ri-file-search-line fs-1 text-muted d-block mb-2" />
+        <h6 className="mb-1 fw-semibold">No requests found</h6>
+        <p className="pa-muted mb-0">
+          Try changing your search or status filter.
+        </p>
+      </td>
+    </tr>
+  )}
+</tbody>
             </table>
           </div>
           <div className="card-footer bg-transparent d-flex flex-wrap justify-content-between align-items-center gap-2"><small className="pa-muted">Showing {filteredRequests.length} of {requests.length} requests</small><small className="pa-muted"><i className="ri-database-2-line me-1" />Sample data</small></div>

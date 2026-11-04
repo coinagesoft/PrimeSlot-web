@@ -359,7 +359,16 @@ const markAllAsRead = async () => {
           />
         </div>
       )}
-
+{loading && (
+  <div className="alert alert-info d-flex align-items-center gap-2 mb-4">
+    <span
+      className="spinner-border spinner-border-sm"
+      role="status"
+      aria-hidden="true"
+    />
+    Loading notifications...
+  </div>
+)}
       <div className="row g-4 mb-4">
         <div className="col-6 col-xl-4">
           <div className="card h-100">
@@ -537,7 +546,7 @@ const markAllAsRead = async () => {
           )}
         </div>
 
-        {filteredNotifications.length > 0 && (
+      {!loading && filteredNotifications.length > 0 && (
           <div className="px-4 py-2 border-top border-bottom d-flex align-items-center gap-2">
             <input
               className="form-check-input mt-0"
@@ -563,7 +572,7 @@ const markAllAsRead = async () => {
         )}
 
         <div className="list-group list-group-flush">
-          {filteredNotifications.map((notification) => (
+         {!loading && filteredNotifications.map((notification) => (
             <div
               key={notification.id}
               className={`list-group-item px-3 px-md-4 py-3 ${
@@ -670,7 +679,7 @@ const markAllAsRead = async () => {
             </div>
           ))}
 
-          {filteredNotifications.length === 0 && (
+        {!loading && filteredNotifications.length === 0 && (
             <div className="text-center px-4 py-5">
               <div
                 className="d-flex align-items-center justify-content-center rounded-circle mx-auto mb-3"
