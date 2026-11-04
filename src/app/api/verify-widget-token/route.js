@@ -1,17 +1,12 @@
-// src/app/api/verify-widget-token/route.js
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
-import { rtdb } from "@/lib/firebaseAdmin";
+import db from "@/lib/db";
 
 const MSG91_VERIFY_URL =
   "https://control.msg91.com/api/v5/widget/verifyAccessToken";
-
-// ====== WARNING: Hardcoded authkey below. Do NOT commit to public repos. ======
-const MSG91_AUTHKEY = "417046AkzbTCai3m68c9391bP1";
-// =============================================================================
 
 function addCORS(res) {
   res.headers.set("Access-Control-Allow-Origin", "*");
@@ -19,238 +14,236 @@ function addCORS(res) {
   res.headers.set("Access-Control-Allow-Headers", "Content-Type,Authorization");
   return res;
 }
+
 export async function OPTIONS() {
-  return addCORS(NextResponse.json({}, { status: 204 }));
+  return addCORS(new NextResponse(null, { status: 204 }));
 }
 
-function digitsOnly(s) {
-  if (!s && s !== 0) return "";
-  return String(s).replace(/\D/g, "");
+function digitsOnly(value) {
+  return String(value ?? "").replace(/\D/g, "");
 }
 
-function extractPhoneFromMsg91Response(data) {
-  if (!data) return null;
+function phoneMatches(stored, verified) {
+  const a = digitsOnly(stored);
+  const b = digitsOnly(verified);
+
+  return a.length >= 10 &&
+    b.length >= 10 &&
+    a.slice(-10) === b.slice(-10);
+}
+
+function extractVerifiedPhone(data) {
   const candidates = [
     data?.data?.mobile,
     data?.data?.identifier,
     data?.identifier,
     data?.mobile,
-    data?.request_id,
-    data?.requestId,
-    data?.message,
+    data?.message
   ];
-  for (const c of candidates) {
-    if (c == null) continue;
-    const d = digitsOnly(c);
-    if (d) return d;
+
+  for (const value of candidates) {
+    if (value == null) continue;
+
+    const digits = digitsOnly(value);
+
+    // Only accept plausible phone-number lengths.
+    if (digits.length >= 10 && digits.length <= 15) {
+      return digits;
+    }
   }
+
   return null;
 }
 
-async function findMemberByPhoneDigits(phoneDigits) {
-  if (!phoneDigits) return null;
-  const snap = await rtdb.ref("/members").get();
-  if (!snap.exists()) return null;
-  const members = snap.val();
-  for (const [id, rec] of Object.entries(members)) {
-    const candidates = [];
-    if (rec?.phone !== undefined) candidates.push(rec.phone);
-    if (rec?.mobile !== undefined) candidates.push(rec.mobile);
-    if (rec?.phoneRaw !== undefined) candidates.push(rec.phoneRaw);
-    candidates.push(rec);
-    for (const p of candidates) {
-      if (p == null) continue;
-      let candidate = null;
-      if (typeof p === "string" || typeof p === "number") candidate = String(p);
-      else if (typeof p === "object") {
-        const keys = [
-          "Value",
-          "value",
-          "phone",
-          "Phone",
-          "mobile",
-          "Mobile",
-          "number",
-          "contact",
-          "phoneRaw",
-        ];
-        for (const k of keys)
-          if (k in p && p[k] != null) {
-            candidate = String(p[k]);
-            break;
-          }
-        if (!candidate) {
-          const vals = Object.values(p).filter(
-            (v) => v != null && (typeof v === "string" || typeof v === "number")
-          );
-          if (vals.length) candidate = String(vals[0]);
-        }
-      }
-      if (!candidate) continue;
-      const storedDigits = digitsOnly(candidate);
-      if (!storedDigits) continue;
-      if (
-        storedDigits === phoneDigits ||
-        storedDigits.endsWith(phoneDigits) ||
-        phoneDigits.endsWith(storedDigits) ||
-        storedDigits.slice(-10) === phoneDigits.slice(-10)
-      ) {
-        return { id, member: rec, storedDigits };
-      }
-    }
-  }
-  return null;
+function buildMember(row) {
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    phone: row.phone,
+    email: row.email,
+    businessName: row.business_name,
+    businessCategory: row.business_category,
+    chapterName: row.chapter_name,
+    region: row.region,
+    city: row.city,
+    memberStatus: row.member_status,
+    trafficLight: row.traffic_light,
+    profileImageUrl: row.profile_image_url,
+    notes: row.notes,
+    firebaseUid: row.firebase_uid,
+    isActive: Boolean(row.is_active),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 export async function POST(request) {
   try {
-    const body = await request.json().catch(() => ({}));
+    const authKey = process.env.MSG91_AUTH_KEY;
+    const jwtSecret = process.env.JWT_SECRET;
+
+    if (!authKey) {
+      return addCORS(NextResponse.json(
+        { success: false, message: "MSG91 configuration missing" },
+        { status: 500 }
+      ));
+    }
+
+    if (!jwtSecret || jwtSecret.length < 32) {
+      return addCORS(NextResponse.json(
+        { success: false, message: "JWT configuration error" },
+        { status: 500 }
+      ));
+    }
+
+    const body = await request.json().catch(() => null);
+
     const accessToken =
       body?.accessToken ||
       body?.["access-token"] ||
-      body?.token ||
-      body?.message;
-    if (!accessToken)
-      return addCORS(
-        NextResponse.json(
-          { success: false, message: "Missing accessToken" },
-          { status: 400 }
-        )
-      );
+      body?.token;
 
-    // Using hardcoded MSG91 authkey (set above)
-    if (!MSG91_AUTHKEY)
-      return addCORS(
-        NextResponse.json(
-          { success: false, message: "MSG91_AUTHKEY missing" },
-          { status: 500 }
-        )
-      );
-
-    // Call MSG91 to verify the widget access token
-    const resp = await fetch(MSG91_VERIFY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        authkey: MSG91_AUTHKEY,
-        "access-token": accessToken,
-      }),
-    });
-
-    const text = await resp.text();
-    const contentType = resp.headers.get("content-type") || "";
-    let data = null;
-    if (contentType.includes("application/json")) {
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        data = text;
-      }
-    } else data = text;
-
-    // --- helpful server-side logging for debugging invalid access-token issues ---
-    console.log("MSG91 /verifyAccessToken reply:", {
-      status: resp.status,
-      contentType,
-      data,
-    });
-    // ---------------------------------------------------------------------------
-
-    if (!resp.ok) {
-      return addCORS(
-        NextResponse.json(
-          {
-            success: false,
-            message: "MSG91 verify failed",
-            status: resp.status,
-            raw: data,
-          },
-          { status: 400 }
-        )
-      );
+    if (!accessToken || typeof accessToken !== "string") {
+      return addCORS(NextResponse.json(
+        { success: false, message: "MSG91 access token required" },
+        { status: 400 }
+      ));
     }
 
+    // 1. Verify the access token with MSG91.
+    const msg91Response = await fetch(MSG91_VERIFY_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        authkey: authKey
+      },
+      body: JSON.stringify({
+        "access-token": accessToken
+      }),
+      cache: "no-store"
+    });
+
+    const msg91Data = await msg91Response.json().catch(() => null);
+
+    // HTTP 200 alone does not mean MSG91 verification succeeded.
     const verified =
-      data?.type === "success" ||
-      data?.status === "success" ||
-      data?.success === true;
-    if (!verified)
-      return addCORS(
-        NextResponse.json(
-          {
-            success: false,
-            message: data?.message || "Invalid access token",
-            raw: data,
-          },
-          { status: 400 }
-        )
+      msg91Response.ok &&
+      msg91Data &&
+      msg91Data.type !== "error" &&
+      msg91Data.status !== "fail" &&
+      msg91Data.hasError !== true &&
+      msg91Data.code !== "201" &&
+      (
+        msg91Data.type === "success" ||
+        msg91Data.status === "success" ||
+        msg91Data.success === true
       );
 
-    const phoneDigits =
-      extractPhoneFromMsg91Response(data) || digitsOnly(body?.phone) || null;
-    if (!phoneDigits)
-      return addCORS(
-        NextResponse.json(
-          {
-            success: false,
-            message: "Phone not found in token response",
-            raw: data,
-          },
-          { status: 400 }
-        )
-      );
+    if (!verified) {
+      console.error("MSG91 access-token verification failed:", {
+        status: msg91Response.status,
+        type: msg91Data?.type,
+        code: msg91Data?.code
+      });
 
-    const matched = await findMemberByPhoneDigits(phoneDigits);
-    if (!matched)
-      return addCORS(
-        NextResponse.json(
-          { success: false, message: "Member not found", phoneDigits },
-          { status: 404 }
-        )
-      );
+      return addCORS(NextResponse.json(
+        { success: false, message: "MSG91 OTP verification failed" },
+        { status: 401 }
+      ));
+    }
 
-     const JWT_SECRET = process.env.JWT_SECRET || "MySuperSecretJWTSecret";
-    const maxAge = Number(process.env.JWT_MAX_AGE || 60 * 60 * 24 * 7);
+    // 2. Get the verified phone from MSG91's response.
+    const verifiedPhone = extractVerifiedPhone(msg91Data);
 
-    const responseBody = {
-      success: true,
-      message: "Verified and member found",
-      data,
-      member: { id: matched.id, ...(matched.member || {}) },
-    };
+    if (!verifiedPhone) {
+      // Never trust a phone number supplied separately by Flutter
+      // as proof of OTP verification.
+      console.error("MSG91 response did not contain a recognized phone field:", msg91Data);
 
-    if (!JWT_SECRET)
-      return addCORS(NextResponse.json(responseBody, { status: 200 }));
+      return addCORS(NextResponse.json(
+        {
+          success: false,
+          message: "Could not identify verified mobile number from MSG91 response"
+        },
+        { status: 401 }
+      ));
+    }
+
+    // 3. Match the verified phone against active MySQL members.
+    const [rows] = await db.execute(`
+      SELECT
+        id,
+        full_name,
+        phone,
+        email,
+        business_name,
+        business_category,
+        chapter_name,
+        region,
+        city,
+        member_status,
+        traffic_light,
+        profile_image_url,
+        notes,
+        firebase_uid,
+        is_active,
+        created_at,
+        updated_at
+      FROM members
+      WHERE is_active = 1
+    `);
+
+    const memberRow = rows.find(row =>
+      phoneMatches(row.phone, verifiedPhone)
+    );
+
+    if (!memberRow) {
+      return addCORS(NextResponse.json(
+        { success: false, message: "No active PrimeSlot member found" },
+        { status: 404 }
+      ));
+    }
+
+    const memberId = String(memberRow.id);
+
+    // 4. Issue the PrimeSlot JWT after successful OTP verification.
+    const expiresIn = 60 * 60 * 24 * 7;
 
     const token = jwt.sign(
       {
-        sub: matched.id, // member ID
-        phone: matched.storedDigits,
+        sub: memberId,
         provider: "msg91",
+        purpose: "member-login"
       },
-      JWT_SECRET,
-      { expiresIn: "7d" }
+      jwtSecret,
+      {
+        expiresIn,
+        issuer: "prime-slot",
+        audience: "prime-slot-client",
+        algorithm: "HS256"
+      }
     );
-    const resOut = NextResponse.json(
-      { ...responseBody, token },
-      { status: 200 }
-    );
-    resOut.cookies.set("session", token, {
-      httpOnly: true,
-      path: "/",
-      maxAge,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+
+    return addCORS(NextResponse.json({
+      success: true,
+      message: "Login successful",
+      token,
+      tokenType: "Bearer",
+      expiresIn,
+      memberId,
+      member: buildMember(memberRow)
+    }));
+
+  } catch (error) {
+    console.error("verify-widget-token error:", {
+      message: error?.message,
+      code: error?.code
     });
 
-    return addCORS(resOut);
-  } catch (err) {
-    console.error("verify-widget-token error:", err);
-    return addCORS(
-      NextResponse.json(
-        { success: false, message: "Verification failed", error: String(err) },
-        { status: 500 }
-      )
-    );
+    return addCORS(NextResponse.json(
+      { success: false, message: "Unable to complete login" },
+      { status: 500 }
+    ));
   }
 }

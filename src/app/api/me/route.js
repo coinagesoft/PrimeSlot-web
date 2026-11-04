@@ -1,3 +1,4 @@
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -39,11 +40,8 @@ function buildMember(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
 
-    // Compatibility field for the existing Flutter login flow.
-    // Approval information must be obtained from the profile approval API
-    // or an appropriate MySQL table if one exists.
     userProfile: {
-      approved: false
+      approved: Boolean(row.profile_approved)
     }
   };
 }
@@ -66,7 +64,7 @@ export async function GET(request) {
       );
     }
 
-    // Bearer token is required.
+    // 1. Extract Bearer token.
     const authorization = request.headers.get("authorization") || "";
     const match = authorization.match(/^Bearer\s+(\S+)$/i);
     const token = match?.[1];
@@ -83,7 +81,7 @@ export async function GET(request) {
       );
     }
 
-    // Verify JWT.
+    // 2. Verify PrimeSlot JWT.
     let decoded;
 
     try {
@@ -92,7 +90,7 @@ export async function GET(request) {
         audience: "prime-slot-client",
         algorithms: ["HS256"]
       });
-    } catch (error) {
+    } catch {
       return addCORS(
         NextResponse.json(
           {
@@ -104,14 +102,14 @@ export async function GET(request) {
       );
     }
 
-    // Accept only preview phone-login tokens.
+    // 3. Accept only MSG91 verified login tokens.
     if (
       !decoded ||
       typeof decoded === "string" ||
       typeof decoded.sub !== "string" ||
       !decoded.sub.trim() ||
-      decoded.provider !== "check-user" ||
-      decoded.purpose !== "test-preview"
+      decoded.provider !== "msg91" ||
+      decoded.purpose !== "member-login"
     ) {
       return addCORS(
         NextResponse.json(
@@ -126,31 +124,34 @@ export async function GET(request) {
 
     const memberId = decoded.sub.trim();
 
-    // Fetch member using the actual MySQL primary key.
+    // 4. Fetch member and actual profile approval status.
     const [rows] = await db.execute(
       `
-        SELECT
-          id,
-          full_name,
-          phone,
-          email,
-          business_name,
-          business_category,
-          chapter_name,
-          region,
-          city,
-          member_status,
-          traffic_light,
-          profile_image_url,
-          notes,
-          firebase_uid,
-          is_active,
-          created_at,
-          updated_at
-        FROM members
-        WHERE id = ?
-          AND is_active = 1
-        LIMIT 1
+      SELECT
+        m.id,
+        m.full_name,
+        m.phone,
+        m.email,
+        m.business_name,
+        m.business_category,
+        m.chapter_name,
+        m.region,
+        m.city,
+        m.member_status,
+        m.traffic_light,
+        m.profile_image_url,
+        m.notes,
+        m.firebase_uid,
+        m.is_active,
+        m.created_at,
+        m.updated_at,
+        COALESCE(mp.approved, 0) AS profile_approved
+      FROM members m
+      LEFT JOIN member_profiles mp
+        ON mp.member_id = m.id
+      WHERE m.id = ?
+        AND m.is_active = 1
+      LIMIT 1
       `,
       [memberId]
     );
@@ -179,6 +180,7 @@ export async function GET(request) {
         { status: 200 }
       )
     );
+
   } catch (error) {
     console.error("Profile route MySQL error:", {
       message: error?.message,
